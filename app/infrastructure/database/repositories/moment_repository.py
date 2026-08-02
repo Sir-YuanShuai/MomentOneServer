@@ -6,11 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import Moment as MomentORM
 from app.modules.moments.domain import (
+    LocationSource,
     Moment,
     MomentCategory,
     MomentEmotion,
     MomentLocation,
-    LocationSource,
 )
 
 
@@ -21,7 +21,9 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
             name=orm.location_name,
             latitude=orm.location_latitude,
             longitude=orm.location_longitude,
-            source=LocationSource(orm.location_source) if orm.location_source else LocationSource.UNKNOWN,
+            source=LocationSource(orm.location_source)
+            if orm.location_source
+            else LocationSource.UNKNOWN,
         )
 
     emotion = None
@@ -88,12 +90,17 @@ class PostgresMomentRepository:
         limit: int = 20,
         cursor: str | None = None,
     ) -> tuple[list[Moment], bool, str | None]:
-        stmt = select(MomentORM).where(
-            and_(
-                MomentORM.user_id == user_id,
-                MomentORM.deleted_at.is_(None),
+        stmt = (
+            select(MomentORM)
+            .where(
+                and_(
+                    MomentORM.user_id == user_id,
+                    MomentORM.deleted_at.is_(None),
+                )
             )
-        ).order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc()).limit(limit + 1)
+            .order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc())
+            .limit(limit + 1)
+        )
 
         if cursor:
             # cursor 是上一页最后一条的 occurred_at + id 的组合
@@ -161,7 +168,11 @@ class PostgresMomentRepository:
         if "ai_summary" in fields:
             orm.ai_summary = fields["ai_summary"]
         if "category" in fields:
-            orm.category = fields["category"].value if hasattr(fields["category"], "value") else fields["category"]
+            orm.category = (
+                fields["category"].value
+                if hasattr(fields["category"], "value")
+                else fields["category"]
+            )
         if "tags" in fields:
             orm.tags = list(fields["tags"])
         if "occurred_at" in fields:

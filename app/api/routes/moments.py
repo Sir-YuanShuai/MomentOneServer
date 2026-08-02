@@ -1,3 +1,4 @@
+import contextlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -14,11 +15,11 @@ from app.infrastructure.database.repositories.user_repository import resolve_use
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.modules.moments.domain import (
+    LocationSource,
     Moment,
     MomentCategory,
     MomentEmotion,
     MomentLocation,
-    LocationSource,
 )
 
 router = APIRouter(prefix="/v1/moments", tags=["moments"])
@@ -52,10 +53,8 @@ def _parse_location(data: dict | None) -> MomentLocation | None:
         return None
     source = LocationSource.UNKNOWN
     if data.get("source"):
-        try:
+        with contextlib.suppress(ValueError):
             source = LocationSource(data["source"])
-        except ValueError:
-            pass
     return MomentLocation(
         name=data.get("name"),
         latitude=data.get("latitude"),
@@ -262,9 +261,7 @@ async def update_moment(
     if body.tags is not None:
         fields["tags"] = tuple(body.tags)
     if body.occurredAt is not None:
-        fields["occurred_at"] = datetime.fromisoformat(
-            body.occurredAt.replace("Z", "+00:00")
-        )
+        fields["occurred_at"] = datetime.fromisoformat(body.occurredAt.replace("Z", "+00:00"))
     if body.location is not None:
         fields["location"] = _parse_location(body.location)
     if body.emotion is not None:

@@ -35,7 +35,9 @@ class CasdoorTokenVerifier:
     def _ensure_jwks_client(self) -> PyJWKClient:
         now = time.monotonic()
         if self._jwks_client is None or now - self._jwks_fetched_at > self._jwks_ttl:
-            jwks_url = str(self._settings.casdoor_jwks_url) if self._settings.casdoor_jwks_url else None
+            jwks_url = (
+                str(self._settings.casdoor_jwks_url) if self._settings.casdoor_jwks_url else None
+            )
             if not jwks_url:
                 raise ApplicationError(
                     code="INTERNAL_ERROR",

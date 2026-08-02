@@ -80,6 +80,7 @@ jobs:
           --name moment-one-server
           --publish 8000:8000
           --env MOMENT_ONE_ENV=test
+          --env MOMENT_ONE_DATABASE_URL=postgresql+psycopg://dummy:dummy@127.0.0.1:5432/dummy
           moment-one-server:${GITHUB_SHA}
 
       - name: Smoke-test health endpoint

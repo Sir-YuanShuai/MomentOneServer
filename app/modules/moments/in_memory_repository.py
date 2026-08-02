@@ -31,11 +31,7 @@ class InMemoryMomentRepository:
         tag: str | None = None,
         query: str | None = None,
     ) -> tuple[list[Moment], str | None]:
-        items = [
-            m
-            for m in self._store.values()
-            if m.user_id == user_id and m.deleted_at is None
-        ]
+        items = [m for m in self._store.values() if m.user_id == user_id and m.deleted_at is None]
         if category:
             items = [m for m in items if m.category.value == category]
         if tag:
@@ -60,7 +56,9 @@ class InMemoryMomentRepository:
                     break
 
         page = items[start_idx : start_idx + limit]
-        next_cursor = str(page[-1].id) if len(page) == limit and start_idx + limit < len(items) else None
+        next_cursor = (
+            str(page[-1].id) if len(page) == limit and start_idx + limit < len(items) else None
+        )
         return page, next_cursor
 
     async def create(
@@ -140,12 +138,18 @@ class InMemoryMomentRepository:
             description=changes.get("description", moment.description),
             voice_input=changes.get("voiceInput", moment.voice_input),
             ai_summary=changes.get("aiSummary", moment.ai_summary),
-            category=MomentCategory(changes["category"]) if "category" in changes else moment.category,
+            category=MomentCategory(changes["category"])
+            if "category" in changes
+            else moment.category,
             tags=tuple(changes["tags"]) if "tags" in changes else moment.tags,
             occurred_at=moment.occurred_at,
             timezone=changes.get("timezone", moment.timezone),
-            location=self._parse_location(changes["location"]) if "location" in changes else moment.location,
-            emotion=self._parse_emotion(changes["emotion"]) if "emotion" in changes else moment.emotion,
+            location=self._parse_location(changes["location"])
+            if "location" in changes
+            else moment.location,
+            emotion=self._parse_emotion(changes["emotion"])
+            if "emotion" in changes
+            else moment.emotion,
             revision=moment.revision + 1,
             created_at=moment.created_at,
             updated_at=now,
