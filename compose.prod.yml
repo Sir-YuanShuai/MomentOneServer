@@ -1,0 +1,37 @@
+# Production deployment compose.
+#
+# Differences from compose.yaml (local dev):
+#   - Pulls a prebuilt image from GHCR instead of building from source.
+#   - Does NOT start PostgreSQL; the database is managed by 1Panel and reached
+#     over the Docker host network via host.docker.internal.
+#   - Reads secrets from a server-side .env file maintained via 1Panel file
+#     manager (never committed to git).
+#
+# Required server-side files in the same directory:
+#   - .env                # real Casdoor / MinIO / DB credentials
+#   - compose.prod.yml    # this file
+#
+# Required GitHub Secrets (used by CI deploy job):
+#   - SERVER_HOST         # server IP or domain
+#   - SERVER_USER         # SSH user
+#   - SERVER_PORT         # SSH port (defaults to 22)
+#   - SERVER_SSH_KEY      # SSH private key
+#   - SERVER_DEPLOY_PATH  # absolute path to this directory, e.g. /opt/moment-one
+#
+# One-time server setup:
+#   docker login ghcr.io -u <github-username> --password-stdin  # use a read:packages PAT
+
+services:
+  api:
+    image: ghcr.io/sir-yuanshuai/momentoneserver:latest
+    env_file:
+      - .env
+    environment:
+      # Force the container to reach the 1Panel-managed PostgreSQL on the host.
+      # Override MOMENT_ONE_DATABASE_URL in .env if you prefer a different host.
+      MOMENT_ONE_ENV: production
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

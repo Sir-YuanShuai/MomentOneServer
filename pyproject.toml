@@ -55,6 +55,7 @@ src = ["app", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+ignore = ["B008"]  # FastAPI Depends() in defaults is the standard pattern
 
 [tool.ruff.format]
 quote-style = "double"
@@ -68,3 +69,11 @@ exclude = [".venv", "migrations"]
 venvPath = "."
 venv = ".venv"
 reportMissingTypeStubs = false
+# Relax "unknown" type rules that fire on common Python patterns (dict.get,
+# JSON parsing, third-party stubs). Re-enable incrementally as code is typed.
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportMissingTypeArgument = false
+reportMissingParameterType = false
