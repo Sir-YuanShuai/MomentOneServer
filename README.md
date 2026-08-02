@@ -135,14 +135,114 @@ make db-reset
 
 `db-reset` 会删除 PostgreSQL Docker volume，属于破坏性操作。
 
-## CI
+## 分支策略
 
-GitHub Actions 配置位于 `.github/workflows/ci.yml`，在 Pull Request 和推送到 `main` 时运行两个 Job：
+```text
+main  ← 受保护的生产分支，只接受 Pull Request 合并；合并后自动触发 CICD 部署生产
+dev   ← 开发集成分支，日常开发与 PR 的目标分支
+```
 
-1. 启动临时 PostgreSQL，执行 Ruff、Pyright、单元/API 测试、Alembic migration 和数据库集成测试；
-2. 构建生产 Docker 镜像，启动容器并调用 `/healthz` 做冒烟测试。
+工作流：
+
+1. 本地在 `dev` 分支开发（或从 `dev` 切出 `feat/*` 特性分支）；
+2. 开发完成后提 Pull Request 到 `dev`，CI 跑测试通过后合并；
+3. `dev` 稳定后提 Pull Request `dev → main`，CI 再次跑测试通过后合并；
+4. 合并到 `main` 后自动触发：构建镜像 → 推送 GHCR → SSH 部署生产 → 健康检查。
+
+`main` 分支建议开启分支保护：要求 PR、要求 CI 通过、禁止直接 push、禁止 force push。
+
+## CI/CD
+
+GitHub Actions 配置位于 `.github/workflows/ci.yml`，按分支触发不同 Job：
+
+| Job | 触发条件 | 作用 |
+|---|---|---|
+| `quality-and-database` | PR + push main/dev | Ruff、Pyright、单元/API 测试、Alembic 迁移验证、PostgreSQL 集成测试 |
+| `container` | PR + push main/dev | 构建生产 Docker 镜像，启动容器并调用 `/healthz` 做冒烟测试 |
+| `publish` | 仅 push main | 构建镜像并推送到 GHCR（`ghcr.io/sir-yuanshuai/momentoneserver`），打 `latest` + `sha-xxxx` + 分支名 tag |
+| `deploy` | 仅 push main | SSH 登录生产服务器，拉取最新镜像、自动跑数据库迁移、重启 api 容器、健康检查 |
+
+数据库迁移在 `deploy` 阶段自动执行 `alembic upgrade head`，只动表结构不动数据。CI 在 `quality-and-database` 阶段已验证迁移可执行，部署时再应用到生产库。
 
 CI 当前不调用远程 Casdoor 或 MinIO/S3，也不需要相关真实 Secret。后续增加远程集成测试时，建议使用独立的测试租户、测试 Bucket 和受保护的 GitHub Environment Secrets，且不要让来自 Fork 的 Pull Request 获得这些凭据。
+
+## 生产部署
+
+生产环境通过 1Panel 面板管理，PostgreSQL 由 1Panel 应用商店提供，API 容器从 GHCR 拉取镜像运行。
+
+### 一次性服务器准备
+
+1. **1Panel 安装 PostgreSQL 17**（应用商店）；
+2. **在 1Panel PostgreSQL 管理界面创建项目数据库与账号**：
+   - 数据库名：`moment_one`
+   - 用户名：`moment_one`
+   - 设置强密码并记录
+3. **在服务器创建部署目录**（建议 `/opt/moment-one`）：
+   ```bash
+   sudo mkdir -p /opt/moment-one
+   sudo chown -R $USER:$USER /opt/moment-one
+   ```
+4. **从仓库拷贝生产配置到部署目录**（或用 1Panel 文件管理上传）：
+   - `compose.prod.yml`（来自本仓库，提交后可在 GitHub raw 下载）
+5. **在部署目录创建 `.env`**（真实凭据，不进 git，1Panel 文件管理维护）：
+   ```bash
+   MOMENT_ONE_ENV=production
+   MOMENT_ONE_DEBUG=false
+   MOMENT_ONE_LOG_LEVEL=INFO
+   MOMENT_ONE_API_PREFIX=/v1
+   MOMENT_ONE_ALLOWED_ORIGINS=https://your-web-domain
+
+   # 1Panel PostgreSQL。host.docker.internal 指向宿主机。
+   MOMENT_ONE_DATABASE_URL=postgresql+psycopg://moment_one:你的强密码@host.docker.internal:5432/moment_one
+
+   # Casdoor OIDC
+   MOMENT_ONE_CASDOOR_ISSUER=https://auth.your-domain.com
+   MOMENT_ONE_CASDOOR_AUDIENCE=moment-one-api
+   MOMENT_ONE_CASDOOR_JWKS_URL=https://auth.your-domain.com/.well-known/jwks.json
+
+   # MinIO / S3
+   MOMENT_ONE_S3_ENDPOINT_URL=https://storage.your-domain.com
+   MOMENT_ONE_S3_REGION=us-east-1
+   MOMENT_ONE_S3_BUCKET=moment-one-media
+   MOMENT_ONE_S3_ACCESS_KEY=你的access-key
+   MOMENT_ONE_S3_SECRET_KEY=你的secret-key
+   ```
+6. **服务器登录 GHCR**（拉私有镜像需要，只需 `read:packages` 权限的 PAT）：
+   ```bash
+   echo "你的GitHub_PAT" | docker login ghcr.io -u 你的GitHub用户名 --password-stdin
+   ```
+7. **1Panel 配置网站/反向代理**：域名 → `127.0.0.1:8000`，申请 Let's Encrypt 证书上 HTTPS。
+
+### GitHub Secrets（仓库 Settings → Secrets and variables → Actions）
+
+| Secret 名 | 说明 | 示例 |
+|---|---|---|
+| `SERVER_HOST` | 服务器 IP 或域名 | `1.2.3.4` |
+| `SERVER_USER` | SSH 用户 | `root` 或专用部署用户 |
+| `SERVER_PORT` | SSH 端口 | `22` |
+| `SERVER_SSH_KEY` | SSH 私钥（完整内容，含 BEGIN/END 行） | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `SERVER_DEPLOY_PATH` | 服务器部署目录绝对路径 | `/opt/moment-one` |
+
+SSH 密钥建议专门为部署生成一对（`ssh-keygen -t ed25519 -f ~/.ssh/moment_one_deploy`），公钥追加到服务器 `~/.ssh/authorized_keys`，私钥粘贴到 `SERVER_SSH_KEY`。
+
+### 首次部署
+
+合并第一个 PR 到 `main` 后，CI 自动完成：
+1. 构建并推送镜像到 GHCR；
+2. SSH 到服务器 `docker compose -f compose.prod.yml pull`；
+3. `docker compose -f compose.prod.yml run --rm api alembic upgrade head`（首次会在空库自动建 `users` 和 `moments` 表）；
+4. `docker compose -f compose.prod.yml up -d api`；
+5. `curl /healthz` 健康检查。
+
+### 手动紧急部署
+
+CI 自动部署失败或需要重新部署当前镜像时，从本地执行：
+
+```bash
+./scripts/deploy.sh
+```
+
+需要本地有 `~/.moment-one-deploy.env` 或导出 `SERVER_HOST` / `SERVER_USER` / `SERVER_PORT` / `SERVER_DEPLOY_PATH` 环境变量，SSH 走本地 `~/.ssh` 配置。
 
 ## Secret 规则
 
