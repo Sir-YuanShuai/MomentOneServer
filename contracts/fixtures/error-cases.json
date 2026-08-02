@@ -1,0 +1,99 @@
+[
+  {
+    "status": 401,
+    "body": {
+      "error": {
+        "code": "AUTH_REQUIRED",
+        "message": "请先登录。",
+        "requestId": "req-001"
+      }
+    }
+  },
+  {
+    "status": 401,
+    "body": {
+      "error": {
+        "code": "TOKEN_INVALID",
+        "message": "Access Token 已过期或无效。",
+        "requestId": "req-002"
+      }
+    }
+  },
+  {
+    "status": 403,
+    "body": {
+      "error": {
+        "code": "SCOPE_DENIED",
+        "message": "当前授权范围不足。",
+        "requestId": "req-003"
+      }
+    }
+  },
+  {
+    "status": 404,
+    "body": {
+      "error": {
+        "code": "MOMENT_NOT_FOUND",
+        "message": "未找到该 Moment。",
+        "requestId": "req-004"
+      }
+    }
+  },
+  {
+    "status": 409,
+    "body": {
+      "error": {
+        "code": "REVISION_CONFLICT",
+        "message": "Moment 已被其他操作修改，请刷新后重试。",
+        "requestId": "req-005",
+        "details": {
+          "expectedRevision": 2,
+          "actualRevision": 3
+        }
+      }
+    }
+  },
+  {
+    "status": 400,
+    "body": {
+      "error": {
+        "code": "INVALID_ARGUMENTS",
+        "message": "请求参数校验失败。",
+        "requestId": "req-006",
+        "details": {
+          "fields": ["title"]
+        }
+      }
+    }
+  },
+  {
+    "status": 409,
+    "body": {
+      "error": {
+        "code": "IDEMPOTENCY_CONFLICT",
+        "message": "相同 Idempotency-Key 已用于不同请求体。",
+        "requestId": "req-007"
+      }
+    }
+  },
+  {
+    "status": 429,
+    "body": {
+      "error": {
+        "code": "RATE_LIMITED",
+        "message": "请求过于频繁，请稍后重试。",
+        "requestId": "req-008"
+      }
+    }
+  },
+  {
+    "status": 500,
+    "body": {
+      "error": {
+        "code": "INTERNAL_ERROR",
+        "message": "服务器内部错误。",
+        "requestId": "req-009"
+      }
+    }
+  }
+]

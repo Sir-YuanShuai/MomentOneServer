@@ -12,6 +12,7 @@ from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.request_context import request_id_context
+from app.infrastructure.database.session import init_database
 
 logger = structlog.get_logger()
 
@@ -39,7 +40,9 @@ def create_application(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await logger.ainfo("application_started", environment=resolved_settings.env)
+        db = init_database(resolved_settings)
         yield
+        await db.dispose()
         await logger.ainfo("application_stopped")
 
     app = FastAPI(

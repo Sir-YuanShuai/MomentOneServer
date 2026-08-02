@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moment-one.dev/contracts/schemas/error-codes.v1.json",
+  "title": "Moment One Error Codes v1",
+  "description": "Stable error codes shared across all clients and server.",
+  "type": "object",
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "requestId"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "AUTH_REQUIRED",
+            "TOKEN_INVALID",
+            "SCOPE_DENIED",
+            "MOMENT_NOT_FOUND",
+            "TARGET_AMBIGUOUS",
+            "REVISION_CONFLICT",
+            "CONFIRMATION_REQUIRED",
+            "CONFIRMATION_EXPIRED",
+            "CONFIRMATION_USED",
+            "INVALID_ARGUMENTS",
+            "IDEMPOTENCY_CONFLICT",
+            "RATE_LIMITED",
+            "MEDIA_NOT_READY",
+            "MEDIA_TYPE_NOT_ALLOWED",
+            "MEDIA_TOO_LARGE",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": { "type": "string" },
+        "requestId": { "type": "string" },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

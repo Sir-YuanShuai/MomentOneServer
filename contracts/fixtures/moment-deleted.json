@@ -1,0 +1,18 @@
+{
+  "id": "d4e5f6a7-4567-89ab-cdef-012345678901",
+  "userId": "usr-001",
+  "title": "已删除的记录",
+  "description": "这条记录已被删除。",
+  "voiceInput": null,
+  "aiSummary": null,
+  "category": "experience",
+  "tags": [],
+  "occurredAt": "2026-07-25T08:00:00.000Z",
+  "timezone": "Asia/Shanghai",
+  "location": null,
+  "emotion": null,
+  "revision": 5,
+  "createdAt": "2026-07-25T08:00:05.000Z",
+  "updatedAt": "2026-07-26T10:00:00.000Z",
+  "deletedAt": "2026-07-26T10:00:00.000Z"
+}

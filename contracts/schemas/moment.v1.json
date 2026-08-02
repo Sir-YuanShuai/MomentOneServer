@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moment-one.dev/contracts/schemas/moment.v1.json",
+  "title": "Moment Domain v1",
+  "description": "Unified Moment domain model shared across Server, Web, and Glasses.",
+  "type": "object",
+  "required": [
+    "id",
+    "userId",
+    "title",
+    "category",
+    "occurredAt",
+    "timezone",
+    "revision",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier. Client-generated for offline-first sync."
+    },
+    "userId": {
+      "type": "string",
+      "description": "Server-side internal user ID. Local MVP uses 'local-user'."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 20,
+      "description": "Short title, typically AI-generated or derived from voice input."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "maxLength": 240,
+      "description": "Longer description of the moment."
+    },
+    "voiceInput": {
+      "type": ["string", "null"],
+      "description": "Original voice transcription that triggered the record."
+    },
+    "aiSummary": {
+      "type": ["string", "null"],
+      "maxLength": 80,
+      "description": "AI-generated summary for quick recall."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["experience", "habit", "travel", "food", "growth", "emotion"],
+      "description": "Primary category for the moment."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 5,
+      "description": "User or AI assigned tags, deduplicated, max 5."
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the moment occurred (user-local time)."
+    },
+    "timezone": {
+      "type": "string",
+      "description": "IANA timezone, e.g. 'Asia/Shanghai'."
+    },
+    "location": {
+      "type": ["object", "null"],
+      "properties": {
+        "name": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "source": {
+          "type": "string",
+          "enum": ["device", "user", "mcp", "unknown"],
+          "default": "unknown"
+        }
+      },
+      "additionalProperties": false
+    },
+    "emotion": {
+      "type": ["object", "null"],
+      "properties": {
+        "label": { "type": "string", "maxLength": 12 },
+        "valence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Positive/negative dimension. 0 = neutral, 1 = very positive."
+        },
+        "arousal": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Calm/excited dimension. 0 = calm, 1 = very excited."
+        }
+      },
+      "required": ["label"],
+      "additionalProperties": false
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optimistic lock revision. 0 for pending local, incremented on each server update."
+    },
+    "syncState": {
+      "type": "string",
+      "enum": ["pending", "synced", "conflict"],
+      "description": "Local-only field for offline sync. Not persisted on server."
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "deletedAt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Tombstone timestamp. null for active moments."
+    }
+  },
+  "additionalProperties": true
+}

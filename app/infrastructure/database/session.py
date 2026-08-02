@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 
 
 class Database:
@@ -33,3 +33,31 @@ class Database:
 
     async def dispose(self) -> None:
         await self.engine.dispose()
+
+
+# 全局单例，在 application lifespan 中初始化
+_db: Database | None = None
+
+
+def init_database(settings: Settings) -> Database:
+    global _db
+    _db = Database(settings)
+    return _db
+
+
+def get_database() -> Database:
+    if _db is None:
+        raise RuntimeError("Database not initialized. Call init_database() first.")
+    return _db
+
+
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI 依赖：提供一个数据库 session，请求结束自动关闭。"""
+    db = get_database()
+    async with db.session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
