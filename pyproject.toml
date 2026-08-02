@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "moment-one-server"
+version = "0.1.0"
+description = "Moment One cloud backend"
+readme = "README.md"
+requires-python = ">=3.13,<3.15"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Moment One" }
+]
+dependencies = [
+  "alembic>=1.14,<2",
+  "boto3>=1.35,<2",
+  "cryptography>=44,<47",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.14,<3",
+  "pyjwt>=2.10,<3",
+  "sqlalchemy[asyncio]>=2.0.36,<3",
+  "structlog>=24.4,<27",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyright>=1.1.390,<2",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
+  "testcontainers[postgres]>=4.9,<5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: tests that require external infrastructure such as PostgreSQL",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["app", "tests"]
+exclude = [".venv", "migrations"]
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = false

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-database:
+    name: Quality and PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: moment_one_test
+          POSTGRES_USER: moment_one
+          POSTGRES_PASSWORD: moment-one-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U moment_one -d moment_one_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MOMENT_ONE_ENV: test
+      MOMENT_ONE_DEBUG: "false"
+      MOMENT_ONE_DATABASE_URL: postgresql+psycopg://moment_one:moment-one-ci-only@127.0.0.1:5432/moment_one_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Run quality gates and unit/API tests
+        run: make check PYTHON=python
+
+      - name: Validate migrations against PostgreSQL
+        run: python -m alembic upgrade head
+
+      - name: Run PostgreSQL integration tests
+        run: make test-integration PYTHON=python
+
+  container:
+    name: Build and smoke-test container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag moment-one-server:${GITHUB_SHA} .
+
+      - name: Start image
+        run: >-
+          docker run --detach --rm
+          --name moment-one-server
+          --publish 8000:8000
+          --env MOMENT_ONE_ENV=test
+          moment-one-server:${GITHUB_SHA}
+
+      - name: Smoke-test health endpoint
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/healthz; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs moment-one-server
+          exit 1
+
+      - name: Print container logs on failure
+        if: failure()
+        run: docker logs moment-one-server || true

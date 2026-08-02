@@ -1,0 +1,49 @@
+from functools import lru_cache
+from typing import Annotated, Literal
+
+from pydantic import Field, HttpUrl, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="MOMENT_ONE_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    env: Literal["development", "test", "staging", "production"] = "development"
+    debug: bool = False
+    log_level: str = "INFO"
+    api_prefix: str = "/v1"
+    allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    database_url: str | None = None
+    database_pool_size: int = Field(default=5, ge=1, le=50)
+    database_max_overflow: int = Field(default=5, ge=0, le=100)
+
+    casdoor_issuer: HttpUrl | None = None
+    casdoor_audience: str | None = None
+    casdoor_jwks_url: HttpUrl | None = None
+
+    s3_endpoint_url: HttpUrl | None = None
+    s3_region: str = "us-east-1"
+    s3_bucket: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_upload_url_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    s3_download_url_ttl_seconds: int = Field(default=300, ge=60, le=3600)
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
