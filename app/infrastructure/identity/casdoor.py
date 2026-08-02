@@ -63,14 +63,6 @@ class CasdoorTokenVerifier:
             unverified = jwt.decode(access_token, options={"verify_signature": False})
             has_aud = "aud" in unverified
 
-            import structlog
-            structlog.get_logger().adebug(
-                "jwt_payload_fields",
-                fields=list(unverified.keys()),
-                has_aud=has_aud,
-                sub=unverified.get("sub"),
-            )
-
             # 仅当 JWT 包含 aud 时才校验受众（Casdoor 可能不包含 aud）
             payload = jwt.decode(
                 access_token,
@@ -115,13 +107,7 @@ class CasdoorTokenVerifier:
             ) from None
         except ApplicationError:
             raise
-        except Exception as exc:
-            import structlog
-            structlog.get_logger().awarning(
-                "jwt_verification_failed",
-                error_type=type(exc).__name__,
-                error_msg=str(exc),
-            )
+        except Exception:
             raise ApplicationError(
                 code="TOKEN_INVALID",
                 message="Access Token 验证失败。",
