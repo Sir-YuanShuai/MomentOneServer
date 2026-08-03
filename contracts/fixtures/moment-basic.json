@@ -1,6 +1,6 @@
 {
   "id": "a1b2c3d4-1234-5678-9abc-def012345678",
-  "userId": "usr-001",
+  "userId": "00000000-0000-4000-8000-000000000001",
   "title": "西湖边散步",
   "description": "下午在西湖边散步，阳光很好，湖面波光粼粼。",
   "voiceInput": "刚在西湖边散步，阳光很好",
@@ -17,11 +17,16 @@
   },
   "emotion": {
     "label": "平静",
+    "source": "inferred",
     "valence": 0.3,
     "arousal": 0.2
   },
+  "provenance": {
+    "source": "rokid",
+    "deviceId": "RKID-A1B2-C3D4-E5F6",
+    "clientId": "rokid-glasses-001"
+  },
   "revision": 1,
-  "syncState": "synced",
   "createdAt": "2026-07-30T15:30:05.000Z",
   "updatedAt": "2026-07-30T15:30:05.000Z",
   "deletedAt": null

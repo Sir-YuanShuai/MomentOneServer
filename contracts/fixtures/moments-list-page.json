@@ -2,7 +2,7 @@
   "items": [
     {
       "id": "a1b2c3d4-1234-5678-9abc-def012345678",
-      "userId": "usr-001",
+      "userId": "00000000-0000-4000-8000-000000000001",
       "title": "西湖边散步",
       "description": "下午在西湖边散步，阳光很好。",
       "voiceInput": "刚在西湖边散步，阳光很好",
@@ -12,7 +12,8 @@
       "occurredAt": "2026-07-30T15:30:00.000Z",
       "timezone": "Asia/Shanghai",
       "location": { "name": "西湖", "source": "device" },
-      "emotion": { "label": "平静", "valence": 0.3, "arousal": 0.2 },
+      "emotion": { "label": "平静", "source": "inferred", "valence": 0.3, "arousal": 0.2 },
+      "provenance": { "source": "rokid", "deviceId": "RKID-A1B2-C3D4-E5F6", "clientId": "rokid-glasses-001" },
       "revision": 1,
       "createdAt": "2026-07-30T15:30:05.000Z",
       "updatedAt": "2026-07-30T15:30:05.000Z",
@@ -20,7 +21,7 @@
     },
     {
       "id": "b2c3d4e5-2345-6789-abcd-ef0123456789",
-      "userId": "usr-001",
+      "userId": "00000000-0000-4000-8000-000000000001",
       "title": "吃了一碗面",
       "description": "在公司楼下面馆吃了一碗牛肉面。",
       "voiceInput": "刚在公司楼下吃了一碗面",
@@ -30,7 +31,8 @@
       "occurredAt": "2026-07-28T12:15:00.000Z",
       "timezone": "Asia/Shanghai",
       "location": { "name": "公司楼下", "source": "user" },
-      "emotion": { "label": "开心", "valence": 0.7, "arousal": 0.3 },
+      "emotion": { "label": "开心", "source": "user", "valence": 0.7, "arousal": 0.3 },
+      "provenance": { "source": "rokid", "deviceId": "RKID-A1B2-C3D4-E5F6", "clientId": "rokid-glasses-001" },
       "revision": 2,
       "createdAt": "2026-07-28T12:15:10.000Z",
       "updatedAt": "2026-07-28T18:00:00.000Z",

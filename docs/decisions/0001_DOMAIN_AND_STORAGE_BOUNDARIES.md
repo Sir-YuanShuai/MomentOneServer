@@ -1,7 +1,8 @@
 # ADR-0001：领域模型与存储边界
 
 > 状态：Accepted for Phase 0  
-> 决策日期：2026-08-01
+> 决策日期：2026-08-01  
+> 跨项目统一编号：ADR-0001（见 [ADR_INDEX.md](../../../docs/decisions/ADR_INDEX.md)）
 
 ## 背景
 

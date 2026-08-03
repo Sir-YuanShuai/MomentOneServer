@@ -95,5 +95,90 @@
         "requestId": "req-009"
       }
     }
+  },
+  {
+    "status": 409,
+    "body": {
+      "error": {
+        "code": "TARGET_AMBIGUOUS",
+        "message": "搜索结果匹配到多条 Moment，请提供更精确的条件。",
+        "requestId": "req-010",
+        "details": {
+          "matchedCount": 3
+        }
+      }
+    }
+  },
+  {
+    "status": 449,
+    "body": {
+      "error": {
+        "code": "CONFIRMATION_REQUIRED",
+        "message": "删除操作需要二次确认，请先调用 Preview 获取 confirmationId。",
+        "requestId": "req-011",
+        "details": {
+          "previewToken": "prev-abc123"
+        }
+      }
+    }
+  },
+  {
+    "status": 449,
+    "body": {
+      "error": {
+        "code": "CONFIRMATION_EXPIRED",
+        "message": "确认令牌已过期，请重新发起 Preview。",
+        "requestId": "req-012"
+      }
+    }
+  },
+  {
+    "status": 409,
+    "body": {
+      "error": {
+        "code": "CONFIRMATION_USED",
+        "message": "该确认令牌已被使用，不可重复确认。",
+        "requestId": "req-013"
+      }
+    }
+  },
+  {
+    "status": 503,
+    "body": {
+      "error": {
+        "code": "MEDIA_NOT_READY",
+        "message": "媒体文件尚未处理完成，请稍后重试。",
+        "requestId": "req-014",
+        "details": {
+          "assetId": "ast-001"
+        }
+      }
+    }
+  },
+  {
+    "status": 415,
+    "body": {
+      "error": {
+        "code": "MEDIA_TYPE_NOT_ALLOWED",
+        "message": "不支持的媒体类型。",
+        "requestId": "req-015",
+        "details": {
+          "allowedTypes": ["image/jpeg", "image/png", "audio/mpeg"]
+        }
+      }
+    }
+  },
+  {
+    "status": 413,
+    "body": {
+      "error": {
+        "code": "MEDIA_TOO_LARGE",
+        "message": "媒体文件超过大小限制。",
+        "requestId": "req-016",
+        "details": {
+          "maxBytes": 10485760
+        }
+      }
+    }
   }
 ]

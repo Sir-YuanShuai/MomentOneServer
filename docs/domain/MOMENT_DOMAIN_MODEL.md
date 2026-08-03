@@ -166,7 +166,7 @@ Moment 发生地点的可选快照，而不是外部地图实体的永久镜像�
 name
 latitude
 longitude
-source       manual | device | imported
+source       device | user | mcp | unknown
 ```
 
 地点仍处于契约草案阶段；在查询需求稳定前可作为可选结构值保存，不预先建设地点主数据系统。
@@ -178,12 +178,13 @@ source       manual | device | imported
 首期建议结构：
 
 ```text
-label
-intensity    可选，范围由 API 契约定义
-source       user | inferred
+label        ≤ 12 字，如 "开心"、"难过"
+source       user | inferred    （用户确认 or AI 推断）
+valence      0-1，正负向（可选，未来扩展）
+arousal      0-1，激动/平静（可选，未来扩展）
 ```
 
-`source=inferred` 表示系统推断，不能伪装成用户确认。Emotion Snapshot 与 Category 是不同概念。
+`source=inferred` 表示系统推断，不能伪装成用户确认。Emotion Snapshot 与 Category 是不同概念：存在情绪字段不会自动把分类改为 `emotion`。
 
 ### 4.10 Asset
 
@@ -249,6 +250,35 @@ Asset 可以表示图片、音频、视频或未来支持的附件。它不保�
 
 Device 在离线同步阶段使用；普通 Web 会话不必都建模为永久 Device。
 
+### 4.16 DeviceBinding
+
+设备与用户的**长期绑定关系**，扫码绑定（QR Binding）的产物。
+
+```text
+DeviceBinding:
+  bindingId        绑定唯一标识（UUID）
+  userId           绑定到的用户账号
+  deviceId         设备唯一标识（引用 Device）
+  scope            授权范围（如 moments.read moments.write）
+  status           active | revoked | expired
+  boundAt          绑定时间
+  lastActiveAt     最后活跃时间
+  revokedAt        撤销时间（status=revoked 时填写）
+  refreshTokenHash   Refresh Token 哈希（不存明文）
+  deviceTokenHash    Device Token 哈希（90 天长期凭据，不存明文）
+```
+
+核心特性：
+
+- 扫码建立的不是一次性 Token，而是设备与账号的长期绑定关系
+- 绑定后 Token 可以过期和刷新，但绑定关系持续存在
+- 用户可在 Web 端查看所有已绑定设备、调整 Scope 或撤销绑定
+- 撤销绑定后，该设备的所有 Token（Access / Refresh / Device Token）立即失效
+- 一副眼镜只能绑定到一个用户账号（同一 deviceId 不允许多账号绑定）
+- Token 生命周期：Access Token（1h）→ Refresh Token（30d）→ Device Token（90d）；只有 Device Token 过期或绑定撤销时才需要重新扫码
+
+详见 `docs/roadmap/MCP_MVP_PLAN.md` §2.5。
+
 ## 5. Moment v1 字段规范
 
 ### 5.1 当前快照
@@ -265,9 +295,11 @@ Device 在离线同步阶段使用；普通 Web 会话不必都建模为永久 D
 | `tags` | string[] | 用户/经确认的建议 | 是 | 可为空；去重并限制数量、单项长度 |
 | `occurredAt` | datetime | 用户/客户端 | 是 | 事件发生时间；API 使用 ISO 8601，数据库使用 `timestamptz` |
 | `timezone` | string | 用户/客户端 | 是 | IANA 时区名称；不只保存 `+08:00` 这类固定偏移 |
-| `location` | object/null | 用户/客户端 | 否 | 可选地点快照；当前代码尚未实现 |
-| `emotion` | object/null | 用户/系统 | 否 | 必须标记来源；当前代码尚未实现 |
-| `revision` | integer | 服务端 | 是 | 创建为 1；成功变更后递增 |
+| `location` | object/null | 用户/客户端 | 否 | 可选地点快照；source: device\|user\|mcp\|unknown |
+| `emotion` | object/null | 用户/系统 | 否 | label + source(user\|inferred) + 可选 valence/arousal |
+| `provenance` | object | 客户端/服务端 | 否 | v1 正式字段；source: rokid\|mobile\|web\|agent\|mcp\|import + 可选 deviceId/clientId/mcpServerId/mcpToolName/externalId；创建后不可篡改。`deviceId` 用于设备来源的 Moment（如眼镜），引用 `devices.id` |
+| `media` | object/null | 用户/客户端 | 否 | v1 正式字段；assetIds: string[]（引用 assets 表）+ 可选 caption；Phase 2 启用 |
+| `revision` | integer | 服务端 | 是 | 本地 pending=0，云端首次=1；成功变更后递增 |
 | `createdAt` | datetime | 服务端 | 是 | 记录首次进入云端的时间 |
 | `updatedAt` | datetime | 服务端 | 是 | 当前快照最近一次变更时间 |
 | `deletedAt` | datetime/null | 服务端 | 否 | 非空表示 Tombstone；默认查询不返回 |
@@ -281,6 +313,8 @@ Device 在离线同步阶段使用；普通 Web 会话不必都建模为永久 D
                 timezone, location, 用户来源的 emotion
 
 系统生成但可展示：aiSummary, 推断来源的 emotion
+
+创建时写入、之后不可篡改：provenance
 
 仅服务端修改：userId, revision, createdAt, updatedAt, deletedAt
 ```
