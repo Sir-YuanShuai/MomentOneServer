@@ -1,6 +1,6 @@
 # MomentOneServer — 实现进度
 
-> 文档状态：Current  |  更新日期：2026-08-03
+> 文档状态：Current  |  更新日期：2026-08-04
 >
 > 本文件记录**当前已实现的代码、表和 API**，是高频更新的"现状快照"。
 > 目标设计见 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md)，
@@ -9,6 +9,8 @@
 ## 当前阶段
 
 Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
+Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼镜端鉴权）。
+详见 [docs/domain/DEVICE_BINDING.md](./docs/domain/DEVICE_BINDING.md)。
 
 ## 已实现的表
 
@@ -58,6 +60,49 @@ Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 > - 需增加 `normalized_search_text`
 > - `revision` 目标 `CHECK (revision >= 1)`
 
+### devices
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | VARCHAR(64), PK | 设备唯一 ID（眼镜端生成，建议 UUID） |
+| device_type | VARCHAR(48) | 设备类型（可选，如 `rokid-glasses`） |
+| device_name | VARCHAR(120) | 设备名称（可选，用户可读） |
+| created_at | TIMESTAMPTZ | 创建时间 |
+
+### device_bindings
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | UUID (PK) | 绑定记录 ID |
+| user_id | UUID, INDEX | 关联 users.id |
+| device_id | VARCHAR(64), INDEX | 关联 devices.id |
+| scope | TEXT[] | 授权范围（如 `moments:read,moments:write`） |
+| status | VARCHAR(16) | `active` / `revoked` |
+| access_token_jti | VARCHAR(64), UNIQUE | 当前 access_token 的 JTI（防重放） |
+| refresh_token_jti | VARCHAR(64), UNIQUE | 当前 refresh_token 的 JTI |
+| access_token_expires_at | TIMESTAMPTZ | access_token 过期时间 |
+| refresh_token_expires_at | TIMESTAMPTZ | refresh_token 过期时间 |
+| last_active_at | TIMESTAMPTZ | 最近一次 token 使用时间 |
+| bound_at | TIMESTAMPTZ | 绑定完成时间 |
+| revoked_at | TIMESTAMPTZ | 撤销时间（NULL = 未撤销） |
+| created_at | TIMESTAMPTZ | 创建时间 |
+| updated_at | TIMESTAMPTZ | 更新时间 |
+
+> **约束**：`(user_id, device_id)` 唯一（一个用户对同一设备只能有一份有效绑定）。
+
+### binding_codes
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| code | VARCHAR(32), PK | 一次性绑定码（`secrets.token_urlsafe(16)`） |
+| user_id | UUID, INDEX | 发起绑定的用户 |
+| scope | TEXT[] | 预授权范围 |
+| device_name | VARCHAR(120) | 预填设备名（可选） |
+| status | VARCHAR(16) | `pending` / `used` / `expired` |
+| expires_at | TIMESTAMPTZ | 过期时间（默认 5 分钟） |
+| used_at | TIMESTAMPTZ | 使用时间（NULL = 未使用） |
+| created_at | TIMESTAMPTZ | 创建时间 |
+
 ## 已实现的 API
 
 | 方法 | 路径 | 状态 | 备注 |
@@ -69,12 +114,18 @@ Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 | GET | `/v1/moments/{id}` | 已实现 | 详情 |
 | PATCH | `/v1/moments/{id}` | 已实现 | 修改（乐观锁） |
 | DELETE | `/v1/moments/{id}` | 已实现 | 软删除（两阶段确认） |
+| POST | `/v1/device/bindings` | 已实现 | 创建绑定会话（Web 端，Casdoor Bearer） |
+| GET | `/v1/device/bindings` | 已实现 | 列出当前用户已绑定设备 |
+| DELETE | `/v1/device/bindings/{id}` | 已实现 | 撤销绑定（吊销 token） |
+| PATCH | `/v1/device/bindings/{id}` | 已实现 | 调整 scope |
+| POST | `/oauth/token` | 已实现 | OAuth 2.1 Token 端点（眼镜端，无 Casdoor 鉴权） |
 
 ## 已实现的迁移
 
 | 迁移 | 说明 |
 |---|---|
 | `0001_create_users_and_moments` | 创建 users 和 moments 表 |
+| `0002_create_devices_and_bindings` | 创建 devices / device_bindings / binding_codes 表 |
 
 ## 已实现的模块
 
@@ -82,6 +133,7 @@ Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 |---|---|---|
 | Moment 领域 | `app/modules/moments/` | 已实现 |
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
+| Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 骨架（内存态） |
@@ -94,7 +146,7 @@ Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 | 阶段 | 表 | 状态 |
 |---|---|---|
 | Phase 1 | `user_identities`, `moment_revisions`, `idempotency_keys`, `audit_events` | 待实现 |
-| Phase 2 | `assets`, `moment_assets`, `user_configs`, `devices`, `device_bindings` | 待实现 |
+| Phase 2 | `assets`, `moment_assets`, `user_configs` | 待实现（`devices` / `device_bindings` 已实现） |
 | Phase 3 | `pending_confirmations` | 待实现（当前内存态） |
 | Phase 4+ | `sync_cursors`, `sync_change_log`, `oauth_clients`, `access_grants`, `agent_connections`, `ai_artifacts`, `search_embeddings` | 待实现 |
 
@@ -106,3 +158,7 @@ Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 | Config 单元测试 | `tests/unit/test_config.py` | 已实现 |
 | Database 集成测试 | `tests/integration/test_database.py` | 已实现 |
 | System API 测试 | `tests/api/test_system.py` | 已实现 |
+| JwtIssuer 单元测试 | `tests/unit/test_jwt_issuer.py` | 已实现 |
+| Binding Code Generator 单元测试 | `tests/unit/test_binding_code_generator.py` | 已实现 |
+| DeviceBindingService 单元测试 | `tests/unit/test_device_binding_service.py` | 已实现 |
+| OAuth Token API 测试 | `tests/api/test_oauth_token.py` | 已实现 |

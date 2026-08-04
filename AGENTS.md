@@ -10,8 +10,9 @@
 1. `contracts/schemas/moment.v1.json` — Moment 领域 JSON Schema（字段冻结）
 2. `docs/data/STORAGE_DATA_MODEL.md` — 数据库与存储设计（目标表结构）
 3. `docs/domain/MOMENT_DOMAIN_MODEL.md` — 领域模型详解
-4. `IMPLEMENTATION_PROGRESS.md` — 当前实现进度（高频更新）
-5. `DATABASE.md` — 数据库稳定参考（认证、配置、迁移命令）
+4. `docs/domain/DEVICE_BINDING.md` — 设备绑定与 OAuth Token 契约（三端共享）
+5. `IMPLEMENTATION_PROGRESS.md` — 当前实现进度（高频更新）
+6. `DATABASE.md` — 数据库稳定参考（认证、配置、迁移命令）
 
 当 `IMPLEMENTATION_PROGRESS.md` 与 `STORAGE_DATA_MODEL.md` 存在差异时，以 `STORAGE_DATA_MODEL.md` 为目标设计。
 

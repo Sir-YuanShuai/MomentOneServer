@@ -7,6 +7,8 @@
 # Required server-side files in the same directory:
 #   - .env                # real Casdoor / MinIO / DB credentials
 #   - compose.prod.yml    # this file
+#   - jwt_private.pem     # RS256 private key (openssl genrsa -out jwt_private.pem 2048)
+#   - jwt_public.pem      # RS256 public key (openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem)
 #
 # Required GitHub Secrets (used by CI deploy job):
 #   - SERVER_HOST         # server IP or domain
@@ -30,6 +32,9 @@ services:
       MOMENT_ONE_ENV: production
     networks:
       - 1panel-network
+    volumes:
+      - ./jwt_private.pem:/keys/jwt_private.pem:ro
+      - ./jwt_public.pem:/keys/jwt_public.pem:ro
     ports:
       - "8001:8000"
     restart: unless-stopped

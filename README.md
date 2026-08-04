@@ -9,12 +9,13 @@ MinIO/S3-compatible object storage。
 
 - [文档索引](./docs/README.md)
 - [Moment One 领域模型](./docs/domain/MOMENT_DOMAIN_MODEL.md)
+- [设备绑定（Device Binding）设计](./docs/domain/DEVICE_BINDING.md)
 - [PostgreSQL 与 MinIO 存储数据模型](./docs/data/STORAGE_DATA_MODEL.md)
 - [ADR-0001：领域模型与存储边界](./docs/decisions/0001_DOMAIN_AND_STORAGE_BOUNDARIES.md)
 
 ## 当前状态
 
-项目目前处于 Phase 0 工程骨架阶段，已经包含：
+项目目前处于 Phase 0-2 阶段，已经包含：
 
 - FastAPI 应用工厂；
 - `/healthz`、`/readyz`、`/version`；
@@ -23,6 +24,8 @@ MinIO/S3-compatible object storage。
 - SQLAlchemy / Alembic 基础；
 - Casdoor 和 MinIO 适配边界；
 - Moment Domain 和 Repository 接口示例；
+- **Moment CRUD**（创建/查询/修改/软删除，乐观锁 + idempotencyKey）；
+- **设备绑定**（Web 端发起 + 眼镜扫码 + OAuth 2.1 Token 端点 + RS256 JWT 双 token）；
 - Ruff、Pyright、pytest；
 - Dockerfile、Docker Compose 和 GitHub Actions CI。
 
