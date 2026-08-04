@@ -1,8 +1,11 @@
 # Production deployment compose.
 #
-# The API container joins the 1panel-network so it can reach the 1Panel-managed
-# PostgreSQL by its container alias "postgresql" (stable across restarts).
-# Reads secrets from a server-side .env file (never committed to git).
+# Differences from compose.yaml (local dev):
+#   - Pulls a prebuilt image from GHCR instead of building from source.
+#   - Does NOT start PostgreSQL; the database is managed by 1Panel and reached
+#     over the Docker host network via host.docker.internal.
+#   - Reads secrets from a server-side .env file maintained via 1Panel file
+#     manager (never committed to git).
 #
 # Required server-side files in the same directory:
 #   - .env                # real Casdoor / MinIO / DB credentials
@@ -19,9 +22,6 @@
 #
 # One-time server setup:
 #   docker login ghcr.io -u <github-username> --password-stdin  # use a read:packages PAT
-#
-# The .env on the server should use the PostgreSQL container alias as host:
-#   MOMENT_ONE_DATABASE_URL=postgresql+psycopg://moment_one:PASSWORD@postgresql:5432/moment_one
 
 services:
   api:
@@ -29,16 +29,14 @@ services:
     env_file:
       - .env
     environment:
+      # Force the container to reach the 1Panel-managed PostgreSQL on the host.
+      # Override MOMENT_ONE_DATABASE_URL in .env if you prefer a different host.
       MOMENT_ONE_ENV: production
-    networks:
-      - 1panel-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./jwt_private.pem:/keys/jwt_private.pem:ro
       - ./jwt_public.pem:/keys/jwt_public.pem:ro
     ports:
-      - "8001:8000"
+      - "8000:8000"
     restart: unless-stopped
-
-networks:
-  1panel-network:
-    external: true

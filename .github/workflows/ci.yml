@@ -154,7 +154,7 @@ jobs:
             docker compose -f compose.prod.yml run --rm api alembic upgrade head
             docker compose -f compose.prod.yml up -d api
             for attempt in $(seq 1 30); do
-              if curl --fail --silent --show-error http://127.0.0.1:8001/healthz; then
+              if curl --fail --silent --show-error http://127.0.0.1:8000/healthz; then
                 echo "Deployment healthy"
                 exit 0
               fi
