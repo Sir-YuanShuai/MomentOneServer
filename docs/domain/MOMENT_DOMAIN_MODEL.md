@@ -264,8 +264,7 @@ DeviceBinding:
   boundAt          绑定时间
   lastActiveAt     最后活跃时间
   revokedAt        撤销时间（status=revoked 时填写）
-  refreshTokenHash   Refresh Token 哈希（不存明文）
-  deviceTokenHash    Device Token 哈希（90 天长期凭据，不存明文）
+  refreshTokenHash   Refresh Token 哈希（不存明文，滚动续期 90 天）
 ```
 
 核心特性：
@@ -273,9 +272,9 @@ DeviceBinding:
 - 扫码建立的不是一次性 Token，而是设备与账号的长期绑定关系
 - 绑定后 Token 可以过期和刷新，但绑定关系持续存在
 - 用户可在 Web 端查看所有已绑定设备、调整 Scope 或撤销绑定
-- 撤销绑定后，该设备的所有 Token（Access / Refresh / Device Token）立即失效
+- 撤销绑定后，该设备的所有 Token（Access / Refresh）立即失效
 - 一副眼镜只能绑定到一个用户账号（同一 deviceId 不允许多账号绑定）
-- Token 生命周期：Access Token（1h）→ Refresh Token（30d）→ Device Token（90d）；只有 Device Token 过期或绑定撤销时才需要重新扫码
+- Token 生命周期：Access Token（1h）→ Refresh Token（90d 滚动续期）；Refresh Token 每次使用重置 90 天倒计时，只要 90 天内用过一次眼镜就永不需重新扫码；连续 90 天未使用或绑定撤销时才需要重新扫码
 
 详见 `docs/roadmap/MCP_MVP_PLAN.md` §2.5。
 

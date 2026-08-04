@@ -452,8 +452,7 @@ updated_at timestamptz NOT NULL
 | `device_id` | `text` | 否 | REFERENCES devices(id) |
 | `scope` | `text[]` | 否 | 授权范围（如 `{moments.read, moments.write}`） |
 | `status` | `varchar(16)` | 否 | `active` / `revoked` / `expired` |
-| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文） |
-| `device_token_hash` | `varchar(128)` | 是 | Device Token 哈希（90 天长期凭据，不存明文） |
+| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，滚动续期 90 天） |
 | `bound_at` | `timestamptz` | 否 | 绑定时间 |
 | `last_active_at` | `timestamptz` | 是 | 最后活跃时间 |
 | `revoked_at` | `timestamptz` | 是 | 撤销时间 |
@@ -462,7 +461,7 @@ updated_at timestamptz NOT NULL
 
 - `device_id` + `status='active'` 唯一（一副眼镜只能绑定到一个活跃用户）
 - 撤销绑定（`status='revoked'`）后该设备的所有 Token 立即失效
-- `refresh_token_hash` 和 `device_token_hash` 只存哈希，不存明文 Token
+- `refresh_token_hash` 只存哈希，不存明文 Token
 - Moment 的 `provenance.deviceId` 为逻辑引用 `devices.id`（JSONB 内不做物理 FK，由应用层校验），可追溯每条 Moment 来自哪副眼镜
 
 ## 6. PostgreSQL 与 MinIO 的对应关系
