@@ -33,12 +33,14 @@ idempotency_keys
 audit_events
 ```
 
-### 3.2 Phase 2：媒体与配置
+### 3.2 Phase 2：媒体、配置与设备绑定
 
 ```text
 assets
 moment_assets
 user_configs
+devices
+device_bindings
 ```
 
 ### 3.3 Phase 3：安全删除
@@ -50,7 +52,6 @@ pending_confirmations
 ### 3.4 Phase 4 以后
 
 ```text
-devices
 sync_cursors
 sync_change_log
 oauth_clients
@@ -60,7 +61,7 @@ ai_artifacts
 search_embeddings
 ```
 
-`devices` 虽然是已识别的领域概念，但首个 Moment Core migration 不必提前创建空表。
+`devices` 和 `device_bindings` 在 Phase 2 引入，因为眼镜端扫码绑定（QR Binding）是 MVP 的核心授权流程。`devices` 记录设备注册信息，`device_bindings` 记录设备与用户的长期绑定关系（可撤销）。详见 `docs/roadmap/MCP_MVP_PLAN.md` §2.5。
 
 ## 4. 实体关系图
 
@@ -73,6 +74,8 @@ erDiagram
     USERS ||--o{ IDEMPOTENCY_KEYS : submits
     USERS ||--o{ PENDING_CONFIRMATIONS : requests
     USERS ||--o{ AUDIT_EVENTS : generates
+    USERS ||--o{ DEVICE_BINDINGS : binds
+    DEVICES ||--o{ DEVICE_BINDINGS : bound_as
 
     MOMENTS ||--o{ MOMENT_REVISIONS : versions
     MOMENTS ||--o{ MOMENT_ASSETS : attaches
@@ -110,6 +113,7 @@ erDiagram
       text timezone
       jsonb location
       jsonb emotion
+      jsonb provenance
       text normalized_search_text
       integer revision
       timestamptz created_at
@@ -216,6 +220,7 @@ Moment 当前有效快照。列表、详情、过滤和大部分搜索直接读�
 | `timezone` | `text` | 否 | IANA 时区名称 |
 | `location` | `jsonb` | 是 | 未稳定的地点快照 |
 | `emotion` | `jsonb` | 是 | 未稳定的情绪快照 |
+| `provenance` | `jsonb` | 是 | v1 正式字段：来源链，与 `moment.v1.json` 对齐 — `source`(rokid\|mobile\|web\|agent\|mcp\|import) + 可选 `deviceId`/`clientId`/`mcpServerId`/`mcpToolName`/`externalId`；创建后不可篡改。`deviceId` 为逻辑引用 `devices.id`（JSONB 内不做物理 FK，由应用层校验） |
 | `normalized_search_text` | `text` | 否 | 服务端生成的搜索派生列 |
 | `revision` | `integer` | 否 | 当前版本，从 1 开始 |
 | `created_at` | `timestamptz` | 否 | 创建时间 |
@@ -260,7 +265,7 @@ occurred_at DESC, id DESC
 | `user_id` | `uuid` | 否 | 冗余所有者，用于权限过滤和分区预留 |
 | `moment_id` | `uuid` | 否 | 对应 Moment |
 | `revision` | `integer` | 否 | 对应逻辑版本 |
-| `operation` | `varchar(16)` | 否 | `created/updated/deleted/restored` |
+| `operation` | `varchar(16)` | 否 | `created/updated/deleted`；`restored` 为预留操作，v1 不实现恢复 API，保留枚举值供未来 ADR 评估 |
 | `snapshot` | `jsonb` | 否 | 该版本完整领域快照 |
 | `actor_user_id` | `uuid` | 是 | 执行用户；系统动作可为空并由审计补充 |
 | `created_at` | `timestamptz` | 否 | 版本生成时间 |
@@ -423,6 +428,42 @@ updated_at timestamptz NOT NULL
 
 只有低风险、结构仍在演进且不需要高频过滤的产品配置适合放入 `config jsonb`。权限、Scope 和数据所有权不能藏在该 JSON 中。
 
+### 5.11 `devices`
+
+设备注册表。首次扫码绑定时自动注册。
+
+| 列 | 推荐类型 | Null | 说明 |
+|---|---|---:|---|
+| `id` | `text` | 否 | 主键，设备自生成唯一标识（如 `RKID-XXXX-YYYY`） |
+| `device_type` | `varchar(48)` | 是 | 设备型号（如 `rokid-air`） |
+| `device_name` | `varchar(120)` | 是 | 显示名称 |
+| `created_at` | `timestamptz` | 否 | 注册时间 |
+
+同一 `id` 只能注册一次。设备不直接关联用户——关联关系在 `device_bindings` 中。
+
+### 5.12 `device_bindings`
+
+设备与用户的长期绑定关系。扫码绑定（QR Binding）的产物。
+
+| 列 | 推荐类型 | Null | 说明 |
+|---|---|---:|---|
+| `id` | `uuid` | 否 | 主键，bindingId |
+| `user_id` | `uuid` | 否 | REFERENCES users(id) |
+| `device_id` | `text` | 否 | REFERENCES devices(id) |
+| `scope` | `text[]` | 否 | 授权范围（如 `{moments.read, moments.write}`） |
+| `status` | `varchar(16)` | 否 | `active` / `revoked` / `expired` |
+| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，滚动续期 90 天） |
+| `bound_at` | `timestamptz` | 否 | 绑定时间 |
+| `last_active_at` | `timestamptz` | 是 | 最后活跃时间 |
+| `revoked_at` | `timestamptz` | 是 | 撤销时间 |
+
+约束：
+
+- `device_id` + `status='active'` 唯一（一副眼镜只能绑定到一个活跃用户）
+- 撤销绑定（`status='revoked'`）后该设备的所有 Token 立即失效
+- `refresh_token_hash` 只存哈希，不存明文 Token
+- Moment 的 `provenance.deviceId` 为逻辑引用 `devices.id`（JSONB 内不做物理 FK，由应用层校验），可追溯每条 Moment 来自哪副眼镜
+
 ## 6. PostgreSQL 与 MinIO 的对应关系
 
 推荐对象 Key：
@@ -519,6 +560,7 @@ SELECT confirmation FOR UPDATE
 
 - `moments.location`；
 - `moments.emotion`；
+- `moments.provenance`；
 - `moment_revisions.snapshot`；
 - `pending_confirmations.preview`；
 - `audit_events.metadata`；
@@ -554,8 +596,9 @@ SELECT confirmation FOR UPDATE
 4. `idempotency_keys`、`audit_events`；
 5. `assets`、`moment_assets`；
 6. `user_configs`；
-7. `pending_confirmations`；
-8. 索引、约束和数据清理任务。
+7. `devices`、`device_bindings`；
+8. `pending_confirmations`；
+9. 索引、约束和数据清理任务。
 
 每次 migration 必须满足：
 

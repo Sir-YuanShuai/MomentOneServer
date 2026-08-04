@@ -1,6 +1,6 @@
 {
   "id": "d4e5f6a7-4567-89ab-cdef-012345678901",
-  "userId": "usr-001",
+  "userId": "00000000-0000-4000-8000-000000000001",
   "title": "已删除的记录",
   "description": "这条记录已被删除。",
   "voiceInput": null,
@@ -11,6 +11,10 @@
   "timezone": "Asia/Shanghai",
   "location": null,
   "emotion": null,
+  "provenance": {
+    "source": "web",
+    "clientId": "web-browser-001"
+  },
   "revision": 5,
   "createdAt": "2026-07-25T08:00:05.000Z",
   "updatedAt": "2026-07-26T10:00:00.000Z",

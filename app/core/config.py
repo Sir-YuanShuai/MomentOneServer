@@ -27,6 +27,16 @@ class Settings(BaseSettings):
     casdoor_audience: str | None = None
     casdoor_jwks_url: HttpUrl | None = None
 
+    # 眼镜端 JWT 自签发（QR Binding 授权）
+    jwt_private_key_path: str | None = None
+    jwt_public_key_path: str | None = None
+    jwt_issuer: str = "https://moment-one-api.yuanshuai.fun"
+    jwt_audience: str = "moment-one-api"
+    access_token_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    refresh_token_ttl_seconds: int = Field(default=7776000, ge=3600, le=31536000)
+    binding_code_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    binding_code_length: int = Field(default=24, ge=12, le=64)
+
     s3_endpoint_url: HttpUrl | None = None
     s3_region: str = "us-east-1"
     s3_bucket: str | None = None

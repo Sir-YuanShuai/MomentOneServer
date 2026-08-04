@@ -1,6 +1,6 @@
 {
   "id": "b2c3d4e5-2345-6789-abcd-ef0123456789",
-  "userId": "usr-001",
+  "userId": "00000000-0000-4000-8000-000000000001",
   "title": "吃了一碗面",
   "description": "在公司楼下面馆吃了一碗牛肉面，味道不错。",
   "voiceInput": "刚在公司楼下吃了一碗面",
@@ -15,11 +15,16 @@
   },
   "emotion": {
     "label": "开心",
+    "source": "user",
     "valence": 0.7,
     "arousal": 0.3
   },
+  "provenance": {
+    "source": "rokid",
+    "deviceId": "RKID-A1B2-C3D4-E5F6",
+    "clientId": "rokid-glasses-001"
+  },
   "revision": 2,
-  "syncState": "synced",
   "createdAt": "2026-07-28T12:15:10.000Z",
   "updatedAt": "2026-07-28T18:00:00.000Z",
   "deletedAt": null

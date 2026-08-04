@@ -82,21 +82,59 @@
       "type": ["object", "null"],
       "properties": {
         "label": { "type": "string", "maxLength": 12 },
+        "source": {
+          "type": "string",
+          "enum": ["user", "inferred"],
+          "description": "user = confirmed by user, inferred = AI-generated."
+        },
         "valence": {
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Positive/negative dimension. 0 = neutral, 1 = very positive."
+          "description": "Positive/negative dimension. 0 = neutral, 1 = very positive. Optional, for future expansion. Note: v1 uses 0-1 (not traditional -1..+1) for simpler client implementation; negative valence is not represented in v1."
         },
         "arousal": {
           "type": "number",
           "minimum": 0,
           "maximum": 1,
-          "description": "Calm/excited dimension. 0 = calm, 1 = very excited."
+          "description": "Calm/excited dimension. 0 = calm, 1 = very excited. Optional, for future expansion."
         }
       },
-      "required": ["label"],
+      "required": ["label", "source"],
       "additionalProperties": false
+    },
+    "provenance": {
+      "type": ["object", "null"],
+      "description": "Moment origin info. Immutable after creation. Used for audit and data lineage.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["rokid", "mobile", "web", "agent", "mcp", "import"]
+        },
+        "deviceId": { "type": "string", "description": "Device ID for device-originated Moments (e.g. Rokid glasses). Links to device_bindings table." },
+        "clientId": { "type": "string" },
+        "mcpServerId": { "type": "string" },
+        "mcpToolName": { "type": "string" },
+        "externalId": { "type": "string" }
+      },
+      "required": ["source"],
+      "additionalProperties": false
+    },
+    "media": {
+      "type": "array",
+      "description": "Read-only media snapshot populated by server on read. Empty on write (use assetIds).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assetId": { "type": "string" },
+          "type": { "type": "string", "description": "MIME type, e.g. image/jpeg" },
+          "thumbnailUrl": { "type": ["string", "null"], "description": "Short-lived signed URL for thumbnail. Null for media types without thumbnails (e.g. audio)." },
+          "downloadUrl": { "type": "string", "description": "Short-lived signed URL for original. Only in detail responses." },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["assetId", "type"],
+        "additionalProperties": false
+      }
     },
     "revision": {
       "type": "integer",
@@ -106,7 +144,7 @@
     "syncState": {
       "type": "string",
       "enum": ["pending", "synced", "conflict"],
-      "description": "Local-only field for offline sync. Not persisted on server."
+      "description": "CLIENT-ONLY field for offline sync. Never persisted on server, never returned in server API responses. Glasses/local clients use this to track sync state. Excluded from server responses per ADR-0002."
     },
     "createdAt": {
       "type": "string",
@@ -122,5 +160,6 @@
       "description": "Tombstone timestamp. null for active moments."
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false,
+  "$comment": "v1 fields are frozen. syncState is client-only and excluded from server responses. New fields require an ADR and schema version bump."
 }

@@ -1,6 +1,6 @@
 {
   "id": "c3d4e5f6-3456-789a-bcde-f01234567890",
-  "userId": "usr-001",
+  "userId": "00000000-0000-4000-8000-000000000001",
   "title": "完成一本书",
   "description": "终于读完了《思考，快与慢》。",
   "voiceInput": "终于读完了一本书",
@@ -12,11 +12,16 @@
   "location": null,
   "emotion": {
     "label": "平静",
+    "source": "inferred",
     "valence": 0.5,
     "arousal": 0.1
   },
+  "provenance": {
+    "source": "rokid",
+    "deviceId": "RKID-A1B2-C3D4-E5F6",
+    "clientId": "rokid-glasses-001"
+  },
   "revision": 3,
-  "syncState": "conflict",
   "createdAt": "2026-07-29T21:00:05.000Z",
   "updatedAt": "2026-07-30T10:00:00.000Z",
   "deletedAt": null

@@ -1,9 +1,19 @@
 # MomentOne 数据库设计
 
+> 文档状态：Current  |  更新日期：2026-08-03
+
 ## 概述
 
 MomentOne 使用 PostgreSQL 作为持久化存储，通过 SQLAlchemy 2.0 (async) 作为 ORM，
 Alembic 管理数据库迁移。
+
+> **权威设计文档**：[PostgreSQL 与 MinIO 存储数据模型](./docs/data/STORAGE_DATA_MODEL.md)
+> 定义了完整的分阶段表结构、约束、索引和事务边界。
+>
+> **当前实现快照**：[IMPLEMENTATION_PROGRESS.md](./IMPLEMENTATION_PROGRESS.md)
+> 记录当前已实现的表、API 和模块，高频更新。
+>
+> 本文件只记录**稳定的参考信息**（认证链路、迁移命令、配置），不重复表结构细节。
 
 ## 认证与用户模型
 
@@ -34,45 +44,6 @@ Alembic 管理数据库迁移。
 - CORS: `allow_credentials=False`，白名单 origin
 - 数据库 session 每请求自动 commit/rollback
 
-## 表结构
-
-### users
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| id | UUID (PK) | 本地唯一用户 ID |
-| casdoor_sub | VARCHAR(255), UNIQUE | Casdoor JWT 的 sub 字段 (owner/name) |
-| casdoor_user_id | VARCHAR(255), INDEX | Casdoor 用户 UUID |
-| display_name | VARCHAR(100) | 显示名称（从 Casdoor 同步） |
-| email | VARCHAR(255) | 邮箱（从 Casdoor 同步） |
-| created_at | TIMESTAMPTZ | 创建时间 |
-| updated_at | TIMESTAMPTZ | 更新时间 |
-
-### moments
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| id | UUID (PK) | Moment 唯一 ID |
-| user_id | UUID, INDEX | 关联 users.id |
-| title | VARCHAR(20) | 标题 |
-| description | TEXT | 描述 |
-| voice_input | TEXT | 语音输入原文 |
-| ai_summary | TEXT | AI 摘要 |
-| category | VARCHAR(20) | 分类 (experience/habit/travel/food/growth/emotion) |
-| tags | TEXT[] | 标签数组 |
-| occurred_at | TIMESTAMPTZ | 发生时间 |
-| timezone | VARCHAR(50) | 时区 |
-| location_name | VARCHAR(200) | 位置名称 |
-| location_latitude | FLOAT | 纬度 |
-| location_longitude | FLOAT | 经度 |
-| location_source | VARCHAR(20) | 位置来源 (device/user/mcp/unknown) |
-| emotion_label | VARCHAR(50) | 情绪标签 |
-| emotion_score | FLOAT | 情绪评分 |
-| revision | INTEGER | 乐观锁版本号 |
-| created_at | TIMESTAMPTZ | 创建时间 |
-| updated_at | TIMESTAMPTZ | 更新时间 |
-| deleted_at | TIMESTAMPTZ | 软删除时间 (NULL = 未删除) |
-
 ## 迁移管理
 
 ```bash
@@ -86,6 +57,13 @@ Alembic 管理数据库迁移。
 .venv/bin/python -m alembic downgrade -1
 ```
 
+或使用 Makefile：
+
+```bash
+make migrate                          # alembic upgrade head
+make migrate-new name="add xxx table" # 创建新迁移
+```
+
 ## 配置
 
 `.env` 文件中需要配置：
@@ -96,3 +74,10 @@ MOMENT_ONE_CASDOOR_ISSUER=https://account.example.com
 MOMENT_ONE_CASDOOR_AUDIENCE=<client_id>
 MOMENT_ONE_CASDOOR_JWKS_URL=https://account.example.com/.well-known/jwks
 ```
+
+## 相关文档
+
+- [PostgreSQL 与 MinIO 存储数据模型](./docs/data/STORAGE_DATA_MODEL.md) — 权威目标设计
+- [实现进度](./IMPLEMENTATION_PROGRESS.md) — 当前已实现的表和 API
+- [Moment One 领域模型](./docs/domain/MOMENT_DOMAIN_MODEL.md) — 概念模型
+- [Moment Domain v1 Schema](./contracts/schemas/moment.v1.json) — JSON Schema 权威定义

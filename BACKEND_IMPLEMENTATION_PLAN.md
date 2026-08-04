@@ -17,12 +17,12 @@
 
 相关产品与平台规划：
 
-- [跨平台实施路线图](../MomentOne/docs/roadmap/PLATFORM_ROADMAP.md)
-- [本地 MVP 范围](../MomentOne/docs/mvp/LOCAL_MVP_SCOPE.md)
-- [跨平台总体架构](../MomentOne/docs/architecture/CROSS_PLATFORM_ARCHITECTURE.md)
-- [Moment MCP Server 契约](../MomentOne/docs/contracts/MCP_SERVER_CONTRACT.md)
-- [身份、同步与安全](../MomentOne/docs/security/IDENTITY_SYNC_SECURITY.md)
-- [ADR-0001：存储与 MCP 边界](../MomentOne/docs/decisions/0001_STORAGE_AND_MCP_BOUNDARIES.md)
+- [跨平台实施路线图](../MomentOneGlasses/docs/roadmap/PLATFORM_ROADMAP.md)
+- [本地 MVP 范围](../MomentOneGlasses/docs/mvp/LOCAL_MVP_SCOPE.md)
+- [跨平台总体架构](../MomentOneGlasses/docs/architecture/CROSS_PLATFORM_ARCHITECTURE.md)
+- [Moment MCP Server 契约](../MomentOneGlasses/docs/contracts/MCP_SERVER_CONTRACT.md)
+- [身份、同步与安全](../MomentOneGlasses/docs/security/IDENTITY_SYNC_SECURITY.md)
+- [ADR-0001：存储与 MCP 边界](../MomentOneGlasses/docs/decisions/0001_STORAGE_AND_MCP_BOUNDARIES.md)
 
 ## 2. 当前已确认条件
 
