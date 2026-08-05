@@ -60,6 +60,7 @@ class McpAuthCodeRepository:
         state: str | None,
         code_challenge: str | None,
         casdoor_code_verifier: str | None,
+        resource: str | None,
         user_id: UUID | None,
         expires_at: datetime,
     ) -> McpOAuthCode:
@@ -73,6 +74,7 @@ class McpAuthCodeRepository:
             state=state,
             code_challenge=code_challenge,
             casdoor_code_verifier=casdoor_code_verifier,
+            resource=resource,
             user_id=user_id,
             status="pending",
             expires_at=expires_at,

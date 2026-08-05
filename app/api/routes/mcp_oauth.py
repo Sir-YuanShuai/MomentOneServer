@@ -110,6 +110,7 @@ async def authorize(
         state=state,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
+        resource=resource,
     )
     return RedirectResponse(url, status_code=302)
 

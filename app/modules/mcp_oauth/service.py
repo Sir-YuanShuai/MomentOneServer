@@ -249,6 +249,7 @@ class MomentOAuthService:
         state: str | None,
         code_challenge: str | None,
         code_challenge_method: str | None,
+        resource: str | None = None,
     ) -> str:
         """校验客户端与参数，创建 casdoor_txn，返回 Casdoor 授权页 URL。"""
         if code_challenge_method not in (None, "S256"):
@@ -292,6 +293,7 @@ class MomentOAuthService:
             state=state,
             code_challenge=code_challenge,
             casdoor_code_verifier=casdoor_verifier,
+            resource=resource,
             user_id=None,
             expires_at=now + timedelta(seconds=self._settings.mcp_auth_code_ttl_seconds),
         )
@@ -378,6 +380,7 @@ class MomentOAuthService:
             state=txn.state,
             code_challenge=txn.code_challenge,
             casdoor_code_verifier=None,
+            resource=txn.resource,
             user_id=user_id,
             expires_at=now + timedelta(seconds=self._settings.mcp_auth_code_ttl_seconds),
         )
@@ -446,11 +449,13 @@ class MomentOAuthService:
             user_id=record.user_id,
             scope=scopes,
             client_id=client_id,
+            resource=record.resource,
         )
         refresh_token = self._jwt_issuer.issue_mcp_refresh_token(
             user_id=record.user_id,
             scope=scopes,
             client_id=client_id,
+            resource=record.resource,
         )
         await self._codes.mark_consumed(code_id=record.id)
 
@@ -478,6 +483,7 @@ class MomentOAuthService:
             user_id=user_id,
             scope=scope,
             client_id=client_id,
+            resource=payload.get("aud"),
         )
         return TokenResponse(
             access_token=access_token,

@@ -357,6 +357,7 @@ def _issue_mcp_token(
         user_id=USER_ID,
         scope=scope,
         client_id=client_id,
+        resource="http://testserver/mcp",
     )
     return token
 
