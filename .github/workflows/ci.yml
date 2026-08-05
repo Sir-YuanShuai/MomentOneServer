@@ -158,7 +158,14 @@ jobs:
           script: |
             set -euo pipefail
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
-            docker compose -f compose.prod.yml pull api
+            # ghcr 拉取偶发网络 EOF：重试 5 次
+            for attempt in 1 2 3 4 5; do
+              if docker compose -f compose.prod.yml pull api; then
+                break
+              fi
+              echo "pull failed (attempt $attempt/5), retrying in 10s"
+              sleep 10
+            done
             docker compose -f compose.prod.yml run --rm api alembic upgrade head
             docker compose -f compose.prod.yml up -d api
             for attempt in $(seq 1 30); do
