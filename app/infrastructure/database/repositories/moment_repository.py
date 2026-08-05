@@ -11,6 +11,7 @@ from app.modules.moments.domain import (
     MomentCategory,
     MomentEmotion,
     MomentLocation,
+    MomentProvenance,
 )
 
 
@@ -33,6 +34,8 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
             valence=orm.emotion_score,
         )
 
+    provenance = MomentProvenance.from_dict(orm.provenance) if orm.provenance else None
+
     return Moment(
         id=orm.id,
         user_id=orm.user_id,
@@ -49,6 +52,7 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
         updated_at=orm.updated_at,
         location=location,
         emotion=emotion,
+        provenance=provenance,
         deleted_at=orm.deleted_at,
     )
 
@@ -77,6 +81,7 @@ class PostgresMomentRepository:
             location_source=moment.location.source.value if moment.location else None,
             emotion_label=moment.emotion.label if moment.emotion else None,
             emotion_score=moment.emotion.valence if moment.emotion else None,
+            provenance=moment.provenance.to_dict() if moment.provenance else None,
             revision=moment.revision,
         )
         self._session.add(orm)
@@ -202,7 +207,7 @@ class PostgresMomentRepository:
         await self._session.flush()
         return _orm_to_domain(orm)
 
-    async def soft_delete(self, moment_id: UUID, user_id: UUID) -> bool:
+    async def soft_delete(self, moment_id: UUID, user_id: UUID) -> Moment | None:
         stmt = select(MomentORM).where(
             and_(
                 MomentORM.id == moment_id,
@@ -213,7 +218,8 @@ class PostgresMomentRepository:
         result = await self._session.execute(stmt)
         orm = result.scalar_one_or_none()
         if not orm:
-            return False
+            return None
         orm.deleted_at = datetime.now(UTC)
+        orm.revision = orm.revision + 1
         await self._session.flush()
-        return True
+        return _orm_to_domain(orm)

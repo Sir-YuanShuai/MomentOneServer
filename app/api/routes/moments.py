@@ -6,46 +6,61 @@ from fastapi import APIRouter, Depends, Header, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings, get_settings
+from app.api.deps import AuthContext, get_auth_context, get_authenticated_user_id
 from app.core.errors import ApplicationError
+from app.infrastructure.database.repositories.audit_event_repository import (
+    SqlAuditEventRepository,
+)
+from app.infrastructure.database.repositories.confirmation_repository import (
+    SqlConfirmationRepository,
+)
+from app.infrastructure.database.repositories.idempotency_repository import (
+    SqlIdempotencyRepository,
+    fingerprint_payload,
+)
 from app.infrastructure.database.repositories.moment_repository import (
     PostgresMomentRepository,
 )
-from app.infrastructure.database.repositories.user_repository import resolve_user_id
+from app.infrastructure.database.repositories.moment_revision_repository import (
+    SqlMomentRevisionRepository,
+)
 from app.infrastructure.database.session import get_db_session
-from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.modules.moments.domain import (
     LocationSource,
     Moment,
     MomentCategory,
     MomentEmotion,
     MomentLocation,
+    MomentProvenance,
+    ProvenanceSource,
 )
 
 router = APIRouter(prefix="/v1/moments", tags=["moments"])
 
-_confirmations: dict[str, dict] = {}
-
-
-def _get_verifier(settings: Settings = Depends(get_settings)) -> CasdoorTokenVerifier:
-    return CasdoorTokenVerifier(settings)
-
 
 async def _get_user_id(
-    settings: Settings = Depends(get_settings),
-    verifier: CasdoorTokenVerifier = Depends(_get_verifier),
-    session: AsyncSession = Depends(get_db_session),
-    authorization: str | None = Header(default=None),
+    user_id: UUID = Depends(get_authenticated_user_id),
 ) -> UUID:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise ApplicationError(
-            code="AUTH_REQUIRED",
-            message="请先登录。",
-            status_code=401,
-        )
+    """鉴权依赖：支持 Casdoor OIDC 和眼镜端 JWT 双通道。"""
+    return user_id
 
-    token = authorization.removeprefix("Bearer ").strip()
-    return await resolve_user_id(session, verifier, token)
+
+def _infer_provenance(ctx: AuthContext, body_provenance: dict | None) -> MomentProvenance:
+    """从 AuthContext 推断 provenance，客户端显式传入优先。
+
+    不可篡改：仅创建时生效，update 路由不接受 provenance。
+    """
+    if body_provenance:
+        return MomentProvenance.from_dict(body_provenance) or MomentProvenance(
+            source=ProvenanceSource.WEB
+        )
+    # 服务端推断
+    if ctx.method == "glasses":
+        return MomentProvenance(
+            source=ProvenanceSource.ROKID,
+            device_id=ctx.device_id,
+        )
+    return MomentProvenance(source=ProvenanceSource.WEB)
 
 
 def _parse_location(data: dict | None) -> MomentLocation | None:
@@ -104,6 +119,7 @@ def _to_dict(moment: Moment) -> dict:
             if moment.emotion
             else None
         ),
+        "provenance": moment.provenance.to_dict() if moment.provenance else None,
         "revision": moment.revision,
         "createdAt": moment.created_at.isoformat(),
         "updatedAt": moment.updated_at.isoformat(),
@@ -122,6 +138,7 @@ class CreateMomentRequest(BaseModel):
     timezone: str = "UTC"
     location: dict | None = None
     emotion: dict | None = None
+    provenance: dict | None = None  # 客户端可显式声明，否则服务端按 AuthContext 推断
 
 
 class UpdateMomentRequest(BaseModel):
@@ -174,17 +191,40 @@ async def list_moments(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_moment(
     body: CreateMomentRequest,
-    user_id: UUID = Depends(_get_user_id),
+    ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
+    # 幂等去重：客户端传 Idempotency-Key 时启用
+    idem_record = None
+    idem_repo: SqlIdempotencyRepository | None = None
+    if idempotency_key:
+        idem_repo = SqlIdempotencyRepository(session)
+        request_fp = fingerprint_payload(body.model_dump())
+        idem_record = await idem_repo.acquire(
+            user_id=ctx.user_id,
+            operation="create_moment",
+            idempotency_key=idempotency_key,
+            request_payload=body.model_dump(),
+        )
+        # fingerprint 不一致 → 冲突（无论 state）
+        if idem_record.request_fingerprint != request_fp:
+            raise ApplicationError(
+                code="IDEMPOTENCY_CONFLICT",
+                message="Idempotency-Key 已用于不同的请求体。",
+                status_code=409,
+            )
+        # 命中缓存：返回原响应
+        if idem_record.state == "completed" and idem_record.response_body is not None:
+            return idem_record.response_body
+
     occurred_at = datetime.now(UTC)
     if body.occurredAt:
         occurred_at = datetime.fromisoformat(body.occurredAt.replace("Z", "+00:00"))
 
     moment = Moment(
         id=uuid4(),
-        user_id=user_id,
+        user_id=ctx.user_id,
         title=body.title,
         description=body.description,
         voice_input=body.voiceInput,
@@ -198,11 +238,46 @@ async def create_moment(
         updated_at=datetime.now(UTC),
         location=_parse_location(body.location),
         emotion=_parse_emotion(body.emotion),
+        provenance=_infer_provenance(ctx, body.provenance),
     )
 
     repo = PostgresMomentRepository(session)
     created = await repo.create(moment)
-    return _to_dict(created)
+    response = _to_dict(created)
+
+    # 记录版本快照
+    revision_repo = SqlMomentRevisionRepository(session)
+    await revision_repo.append(
+        user_id=created.user_id,
+        moment_id=created.id,
+        revision=created.revision,
+        operation="created",
+        snapshot=response,
+        actor_user_id=ctx.user_id,
+    )
+
+    # 审计
+    audit_repo = SqlAuditEventRepository(session)
+    await audit_repo.append(
+        user_id=ctx.user_id,
+        actor_type="web" if ctx.method == "casdoor" else "device",
+        actor_id=str(ctx.device_id) if ctx.method == "glasses" else None,
+        event_type="moment.created",
+        resource_type="moment",
+        resource_id=created.id,
+        allowed=True,
+    )
+
+    # 写入幂等缓存
+    if idem_repo is not None and idem_record is not None:
+        await idem_repo.complete(
+            record_id=idem_record.id,
+            response_status=status.HTTP_201_CREATED,
+            response_body=response,
+            resource_id=created.id,
+        )
+
+    return response
 
 
 @router.get("/{moment_id}", response_model=dict)
@@ -226,9 +301,10 @@ async def get_moment(
 async def update_moment(
     moment_id: str,
     body: UpdateMomentRequest,
-    user_id: UUID = Depends(_get_user_id),
+    ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
+    user_id = ctx.user_id
     repo = PostgresMomentRepository(session)
     existing = await repo.get_by_id(UUID(moment_id), user_id)
     if existing is None:
@@ -274,7 +350,32 @@ async def update_moment(
             message="未找到该 Moment。",
             status_code=404,
         )
-    return _to_dict(moment)
+    response = _to_dict(moment)
+
+    # 记录版本快照
+    revision_repo = SqlMomentRevisionRepository(session)
+    await revision_repo.append(
+        user_id=user_id,
+        moment_id=moment.id,
+        revision=moment.revision,
+        operation="updated",
+        snapshot=response,
+        actor_user_id=ctx.user_id,
+    )
+
+    # 审计
+    audit_repo = SqlAuditEventRepository(session)
+    await audit_repo.append(
+        user_id=user_id,
+        actor_type="web" if ctx.method == "casdoor" else "device",
+        actor_id=str(ctx.device_id) if ctx.method == "glasses" else None,
+        event_type="moment.updated",
+        resource_type="moment",
+        resource_id=moment.id,
+        allowed=True,
+    )
+
+    return response
 
 
 @router.post("/{moment_id}/delete-preview", response_model=dict)
@@ -304,19 +405,27 @@ async def delete_preview(
             },
         )
 
-    confirmation_id = str(uuid4())
     expires_at = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=5)
-
-    _confirmations[confirmation_id] = {
-        "moment_id": moment.id,
-        "user_id": user_id,
-        "expires_at": expires_at,
-        "used": False,
+    preview = {
+        "title": moment.title,
+        "category": moment.category.value,
+        "occurredAt": moment.occurred_at.isoformat(),
     }
 
+    confirmation_repo = SqlConfirmationRepository(session)
+    confirmation = await confirmation_repo.create(
+        user_id=user_id,
+        target_type="moment",
+        target_id=moment.id,
+        action="delete",
+        expected_revision=moment.revision,
+        preview=preview,
+        expires_at=expires_at,
+    )
+
     return {
-        "confirmationId": confirmation_id,
-        "expiresAt": expires_at.isoformat(),
+        "confirmationId": str(confirmation.id),
+        "expiresAt": confirmation.expires_at.isoformat(),
         "revision": moment.revision,
     }
 
@@ -327,26 +436,55 @@ async def delete_confirm(
     user_id: UUID = Depends(_get_user_id),
     session: AsyncSession = Depends(get_db_session),
 ) -> None:
-    record = _confirmations.get(body.confirmationId)
-    if record is None:
+    confirmation_repo = SqlConfirmationRepository(session)
+    confirmation = await confirmation_repo.get(UUID(body.confirmationId))
+    if confirmation is None:
         raise ApplicationError(
             code="CONFIRMATION_REQUIRED",
             message="请先执行删除预览。",
             status_code=400,
         )
-    if record["used"]:
+    if confirmation.user_id != user_id:
+        # 不泄露存在性，统一返回 CONFIRMATION_REQUIRED
+        raise ApplicationError(
+            code="CONFIRMATION_REQUIRED",
+            message="请先执行删除预览。",
+            status_code=400,
+        )
+    if confirmation.status == "used":
         raise ApplicationError(
             code="CONFIRMATION_USED",
             message="该确认已使用，请重新发起删除。",
             status_code=400,
         )
-    if datetime.now(UTC) > record["expires_at"]:
+    if datetime.now(UTC) > confirmation.expires_at:
         raise ApplicationError(
             code="CONFIRMATION_EXPIRED",
             message="确认已过期，请重新发起删除。",
             status_code=400,
         )
 
-    record["used"] = True
+    # 同一事务内：消费票据 + 软删除 Moment + 记录版本 + 审计
+    await confirmation_repo.mark_used(confirmation_id=confirmation.id, used_at=datetime.now(UTC))
     repo = PostgresMomentRepository(session)
-    await repo.soft_delete(record["moment_id"], user_id)
+    deleted = await repo.soft_delete(confirmation.target_id, user_id)
+    if deleted is not None:
+        revision_repo = SqlMomentRevisionRepository(session)
+        await revision_repo.append(
+            user_id=user_id,
+            moment_id=deleted.id,
+            revision=deleted.revision,
+            operation="deleted",
+            snapshot=_to_dict(deleted),
+            actor_user_id=user_id,
+        )
+    audit_repo = SqlAuditEventRepository(session)
+    await audit_repo.append(
+        user_id=user_id,
+        actor_type="web",
+        actor_id=str(user_id),
+        event_type="moment.deleted",
+        resource_type="moment",
+        resource_id=confirmation.target_id,
+        allowed=True,
+    )

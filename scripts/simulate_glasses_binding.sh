@@ -70,12 +70,22 @@ echo ""
 
 # ---- Step 2: 用 access_token 访问 Moment API（模拟眼镜端日常请求）----
 echo "[2/3] 用 access_token 访问 Moment API（GET /v1/moments）..."
-MOMENTS_RESP=$(curl -sS -X GET \
+MOMENTS_HTTP_CODE=$(curl -sS -o /tmp/moments_resp.json -w "%{http_code}" -X GET \
   "$API_BASE/v1/moments?limit=5" \
-  -H "Authorization: Bearer $ACCESS_TOKEN")
+  -H "Authorization: Bearer $ACCESS_TOKEN" 2>/dev/null || echo "000")
+MOMENTS_RESP=$(cat /tmp/moments_resp.json 2>/dev/null || echo "")
+rm -f /tmp/moments_resp.json
 
+echo "  HTTP $MOMENTS_HTTP_CODE"
 echo "  响应: ${MOMENTS_RESP:0:200}..."
-echo "  ✅ 眼镜端成功用 token 访问了 Moment API"
+
+if [ "$MOMENTS_HTTP_CODE" = "200" ]; then
+  echo "  ✅ 眼镜端成功用 token 访问了 Moment API"
+else
+  ERR_CODE=$(echo "$MOMENTS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null || echo "")
+  echo "  ❌ 眼镜端 token 访问 API 失败 (HTTP $MOMENTS_HTTP_CODE${ERR_CODE:+, $ERR_CODE})"
+  echo "  ⚠️  这是已知的 MVP 缺口：/v1/moments 只验 Casdoor token，未接入眼镜端 JWT 验签"
+fi
 echo ""
 
 # ---- Step 3: 用 refresh_token 刷新（模拟 token 过期后续期）----

@@ -114,3 +114,37 @@ class JwtIssuer:
                 status_code=401,
             )
         return payload
+
+    def verify_access_token(self, token: str) -> dict:
+        """验签眼镜端 access_token，返回 payload。失败抛 ApplicationError。
+
+        用于业务 API（如 /v1/moments）接受眼镜端 JWT 鉴权。
+        校验 RS256 签名 + iss + aud + exp + token_type=access。
+        """
+        _, public_key = self._ensure_keys()
+        try:
+            payload = jwt.decode(
+                token,
+                public_key,
+                algorithms=["RS256"],
+                audience=self._settings.jwt_audience,
+                issuer=self._settings.jwt_issuer,
+            )
+        except jwt.PyJWTError as exc:
+            raise ApplicationError(
+                code="TOKEN_INVALID",
+                message="access_token 验签失败。",
+                status_code=401,
+            ) from exc
+        if payload.get("token_type") != "access":
+            raise ApplicationError(
+                code="TOKEN_INVALID",
+                message="token 不是 access_token。",
+                status_code=401,
+            )
+        return payload
+
+    @property
+    def issuer(self) -> str:
+        """当前签发方 issuer，用于路由判断。"""
+        return self._settings.jwt_issuer

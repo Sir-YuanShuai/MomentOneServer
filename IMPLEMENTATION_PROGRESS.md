@@ -48,6 +48,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | location_source | VARCHAR(20) | 位置来源 |
 | emotion_label | VARCHAR(50) | 情绪标签（可选） |
 | emotion_score | FLOAT | 情绪效价（可选） |
+| provenance | JSONB | v1 正式字段：来源链（source + 可选 deviceId/clientId/mcpServerId/mcpToolName/externalId），创建后不可篡改 |
 | revision | INTEGER | 乐观锁版本号（默认 1） |
 | created_at | TIMESTAMPTZ | 创建时间 |
 | updated_at | TIMESTAMPTZ | 更新时间 |
@@ -56,7 +57,6 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 > **目标差异**：
 > - `location` 和 `emotion` 将合并为 `jsonb` 列
 > - `emotion` 需增加 `source` 和 `arousal`
-> - 需增加 `provenance`（jsonb，v1 正式字段，创建后不可篡改）
 > - 需增加 `normalized_search_text`
 > - `revision` 目标 `CHECK (revision >= 1)`
 
@@ -126,6 +126,10 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 |---|---|
 | `0001_create_users_and_moments` | 创建 users 和 moments 表 |
 | `0002_create_devices_and_bindings` | 创建 devices / device_bindings / binding_codes 表 |
+| `0003_add_provenance_to_moments` | 给 moments 表增加 provenance jsonb 列 |
+| `0004_create_pending_confirmations` | 创建 pending_confirmations 表（替代内存态两阶段删除） |
+| `0005_create_idempotency_keys` | 创建 idempotency_keys 表（写操作去重） |
+| `0006_create_phase1_identity_revision_audit` | 创建 user_identities / moment_revisions / audit_events 表 |
 
 ## 已实现的模块
 
@@ -136,7 +140,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
 | Audit | `app/modules/audit/` | 骨架 |
-| Confirmations | `app/modules/confirmations/` | 骨架（内存态） |
+| Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
 | Media | `app/modules/media/` | 骨架 |
 
 ## 未实现的目标表
@@ -145,9 +149,9 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 
 | 阶段 | 表 | 状态 |
 |---|---|---|
-| Phase 1 | `user_identities`, `moment_revisions`, `idempotency_keys`, `audit_events` | 待实现 |
+| Phase 1 | `user_identities`, `moment_revisions`, `idempotency_keys`, `audit_events` | 已实现（表 + ORM + repository；moments 路由已接入 revisions + audit） |
 | Phase 2 | `assets`, `moment_assets`, `user_configs` | 待实现（`devices` / `device_bindings` 已实现） |
-| Phase 3 | `pending_confirmations` | 待实现（当前内存态） |
+| Phase 3 | `pending_confirmations` | 已实现（替代内存态） |
 | Phase 4+ | `sync_cursors`, `sync_change_log`, `oauth_clients`, `access_grants`, `agent_connections`, `ai_artifacts`, `search_embeddings` | 待实现 |
 
 ## 测试覆盖
