@@ -205,6 +205,7 @@ class PostgresMomentRepository:
 
         orm.revision += 1
         await self._session.flush()
+        await self._session.refresh(orm)
         return _orm_to_domain(orm)
 
     async def soft_delete(self, moment_id: UUID, user_id: UUID) -> Moment | None:
@@ -222,4 +223,5 @@ class PostgresMomentRepository:
         orm.deleted_at = datetime.now(UTC)
         orm.revision = orm.revision + 1
         await self._session.flush()
+        await self._session.refresh(orm)
         return _orm_to_domain(orm)
