@@ -215,7 +215,11 @@ Moment 当前有效快照。列表、详情、过滤和大部分搜索直接读�
 | `voice_input` | `text` | 是 | 原始口述文本/确认转写 |
 | `ai_summary` | `text` | 是 | 可重建派生摘要 |
 | `category` | `varchar(32)` | 否 | v1 Category |
+| `moment_type` | `varchar(32)` | 否 | 记录类型标识，默认 `'general'`；内置类型注册表驱动（bookkeeping / habit / general 兜底），见 `docs/domain/MOMENT_RECORD_TYPES.md`（ADR-0017） |
+| `payload` | `jsonb` | 否 | 类型化扩展字段，默认 `'{}'`；按 `contracts/types/*.schema.json` 校验 |
 | `tags` | `text[]` | 否 | 默认空数组；应用层规范化和去重 |
+| `persons` | `text[]` | 否 | 通用描述维度（ADR-0019）：人物，每项 ≤20 字 ≤10 项，可空 |
+| `event_name` | `varchar(50)` | 是 | 通用描述维度（ADR-0019）：所属事件，可空 |
 | `occurred_at` | `timestamptz` | 否 | 事件发生时刻 |
 | `timezone` | `text` | 否 | IANA 时区名称 |
 | `location` | `jsonb` | 是 | 未稳定的地点快照 |
@@ -427,6 +431,27 @@ updated_at timestamptz NOT NULL
 ```
 
 只有低风险、结构仍在演进且不需要高频过滤的产品配置适合放入 `config jsonb`。权限、Scope 和数据所有权不能藏在该 JSON 中。
+
+### 5.10.1 `habit_goals`（习惯养成，ADR-0018）
+
+用户设定的习惯目标（游泳 / 跑步 / 喝水…），是打卡记录（`type=habit` 的 Moment）的挂靠对象。
+
+```text
+id         uuid PRIMARY KEY
+user_id    uuid NOT NULL REFERENCES users(id)
+name       varchar(30) NOT NULL         -- 习惯名称（≤30 字）
+unit       varchar(20)                  -- 计量单位（次 / 分钟 / 公里…）
+frequency  varchar(16)                  -- 打卡频率（daily=每天 / weekly=每周 N 次），仅展示不驱动校验
+times_per_week integer                 -- frequency=weekly 时的每周目标次数
+color      varchar(16)                  -- 习惯标识色（日历/卡片区分）
+revision   integer NOT NULL DEFAULT 1   -- 乐观锁
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+deleted_at timestamptz                  -- Tombstone，删除后历史打卡记录保留
+```
+
+打卡记录通过 `moments.payload.goalId`（JSONB）逻辑引用 `habit_goals.id`，不做物理 FK，
+由应用层在创建/更新打卡时校验归属。
 
 ### 5.11 `devices`
 

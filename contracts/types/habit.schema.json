@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moment-one.dev/contracts/types/habit.schema.json",
+  "title": "Habit Payload v1",
+  "description": "习惯打卡类型 payload 校验 Schema。语义：记录某天某习惯是否完成。",
+  "type": "object",
+  "required": ["habit", "done"],
+  "properties": {
+    "habit": {
+      "type": "string",
+      "maxLength": 30,
+      "description": "习惯名称（≤30 字）"
+    },
+    "done": {
+      "type": "boolean",
+      "description": "是否完成"
+    },
+    "unit": {
+      "type": "string",
+      "description": "计量单位（如：次、分钟、公里）"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "完成数量（≥1）"
+    },
+    "goalId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "关联的习惯目标 ID（habit_goals.id，ADR-0017 演进，可选；提供时服务端校验存在且归属当前用户）"
+    }
+  },
+  "additionalProperties": true
+}

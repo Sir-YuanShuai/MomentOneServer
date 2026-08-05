@@ -1,0 +1,44 @@
+{
+  "id": "f6a7b8c9-6789-abcd-def0-234567890123",
+  "userId": "00000000-0000-4000-8000-000000000001",
+  "title": "午餐支出",
+  "description": "在楼下餐厅吃午饭",
+  "voiceInput": null,
+  "aiSummary": null,
+  "category": "food",
+  "type": "bookkeeping",
+  "payload": {
+    "amount": 38.5,
+    "currency": "CNY",
+    "flow": "expense",
+    "account": "微信",
+    "category": "餐饮",
+    "ledger": "日常",
+    "method": "微信支付",
+    "countInFlow": true,
+    "countInBudget": true,
+    "relatedBillIds": [
+      "f6a7b8c9-6789-abcd-def0-234567890123"
+    ]
+  },
+  "tags": [
+    "记账",
+    "餐饮"
+  ],
+  "occurredAt": "2026-08-05T12:15:00.000Z",
+  "timezone": "Asia/Shanghai",
+  "location": null,
+  "emotion": null,
+  "provenance": {
+    "source": "web",
+    "clientId": "web-browser-001"
+  },
+  "revision": 1,
+  "createdAt": "2026-08-05T12:15:05.000Z",
+  "updatedAt": "2026-08-05T12:15:05.000Z",
+  "deletedAt": null,
+  "persons": [
+    "妈妈"
+  ],
+  "event": "家庭聚餐"
+}

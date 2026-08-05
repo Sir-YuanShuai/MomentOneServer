@@ -30,10 +30,13 @@ class InMemoryMomentRepository:
         category: str | None = None,
         tag: str | None = None,
         query: str | None = None,
+        moment_type: str | None = None,
     ) -> tuple[list[Moment], str | None]:
         items = [m for m in self._store.values() if m.user_id == user_id and m.deleted_at is None]
         if category:
             items = [m for m in items if m.category.value == category]
+        if moment_type:
+            items = [m for m in items if m.moment_type == moment_type]
         if tag:
             items = [m for m in items if tag in m.tags]
         if query:
@@ -71,10 +74,14 @@ class InMemoryMomentRepository:
         ai_summary: str | None = None,
         category: str = "experience",
         tags: list[str] | None = None,
+        persons: list[str] | None = None,
+        event: str | None = None,
         occurred_at: datetime | None = None,
         timezone: str = "UTC",
         location: dict | None = None,
         emotion: dict | None = None,
+        moment_type: str = "general",
+        payload: dict | None = None,
         idempotency_key: str | None = None,
     ) -> Moment:
         if idempotency_key:
@@ -92,6 +99,8 @@ class InMemoryMomentRepository:
             ai_summary=ai_summary,
             category=MomentCategory(category),
             tags=tuple(tags or []),
+            persons=tuple(persons or []),
+            event=event,
             occurred_at=occurred_at or now,
             timezone=timezone,
             location=self._parse_location(location),
@@ -99,6 +108,8 @@ class InMemoryMomentRepository:
             revision=1,
             created_at=now,
             updated_at=now,
+            moment_type=moment_type,
+            payload=payload or {},
         )
         self._store[moment.id] = moment
         if idempotency_key:
@@ -142,6 +153,8 @@ class InMemoryMomentRepository:
             if "category" in changes
             else moment.category,
             tags=tuple(changes["tags"]) if "tags" in changes else moment.tags,
+            persons=tuple(changes["persons"]) if "persons" in changes else moment.persons,
+            event=changes.get("event", moment.event),
             occurred_at=moment.occurred_at,
             timezone=changes.get("timezone", moment.timezone),
             location=self._parse_location(changes["location"])
@@ -150,6 +163,8 @@ class InMemoryMomentRepository:
             emotion=self._parse_emotion(changes["emotion"])
             if "emotion" in changes
             else moment.emotion,
+            moment_type=changes.get("moment_type", moment.moment_type),
+            payload=changes.get("payload", moment.payload),
             revision=moment.revision + 1,
             created_at=moment.created_at,
             updated_at=now,
@@ -171,6 +186,8 @@ class InMemoryMomentRepository:
             ai_summary=moment.ai_summary,
             category=moment.category,
             tags=moment.tags,
+            persons=moment.persons,
+            event=moment.event,
             occurred_at=moment.occurred_at,
             timezone=moment.timezone,
             location=moment.location,
@@ -179,6 +196,8 @@ class InMemoryMomentRepository:
             created_at=moment.created_at,
             updated_at=now,
             deleted_at=now,
+            moment_type=moment.moment_type,
+            payload=moment.payload,
         )
         self._store[moment.id] = deleted
         return deleted

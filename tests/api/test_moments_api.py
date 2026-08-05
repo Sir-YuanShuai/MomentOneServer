@@ -95,9 +95,25 @@ class FakeMomentRepository:
         return m
 
     async def list_by_user(
-        self, *, user_id: UUID, limit: int, cursor: str | None
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+        cursor: str | None,
+        moment_type: str | None = None,
+        category: str | None = None,
+        tag: str | None = None,
+        goal_id: UUID | None = None,
     ) -> tuple[list[Moment], bool, str | None]:
         items = [m for m in self._store.values() if m.user_id == user_id]
+        if moment_type:
+            items = [m for m in items if m.moment_type == moment_type]
+        if category:
+            items = [m for m in items if m.category.value == category]
+        if tag:
+            items = [m for m in items if tag in m.tags]
+        if goal_id:
+            items = [m for m in items if m.payload.get("goalId") == str(goal_id)]
         return items[:limit], len(items) > limit, None
 
     async def update(self, moment_id: UUID, user_id: UUID, **fields: Any) -> Moment | None:
@@ -114,6 +130,8 @@ class FakeMomentRepository:
             ai_summary=fields.get("ai_summary", m.ai_summary),
             category=fields.get("category", m.category),
             tags=fields.get("tags", m.tags),
+            persons=fields.get("persons", m.persons),
+            event=fields.get("event", m.event),
             occurred_at=fields.get("occurred_at", m.occurred_at),
             timezone=fields.get("timezone", m.timezone),
             revision=m.revision + 1,
@@ -123,6 +141,8 @@ class FakeMomentRepository:
             emotion=fields.get("emotion", m.emotion),
             provenance=m.provenance,
             deleted_at=m.deleted_at,
+            moment_type=fields.get("moment_type", m.moment_type),
+            payload=fields.get("payload", m.payload),
         )
         self._store[moment_id] = updated
         return updated
@@ -149,6 +169,8 @@ class FakeMomentRepository:
             emotion=m.emotion,
             provenance=m.provenance,
             deleted_at=datetime.now(UTC),
+            moment_type=m.moment_type,
+            payload=m.payload,
         )
         self._store[moment_id] = deleted
         return deleted
@@ -459,6 +481,21 @@ class FakeSession:
         pass
 
 
+class FakeHabitGoalRepository:
+    """内存态 HabitGoal Repository（供 payload.goalId 归属校验）。"""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, UUID] = {}  # goal_id -> user_id
+
+    def seed(self, goal_id: UUID, user_id: UUID) -> None:
+        self._store[goal_id] = user_id
+
+    async def get_by_id(self, goal_id: UUID, user_id: UUID) -> Any | None:
+        if self._store.get(goal_id) != user_id:
+            return None
+        return {"id": goal_id, "user_id": user_id, "name": "test-goal"}
+
+
 @pytest.fixture
 def fake_repos() -> dict[str, Any]:
     return {
@@ -469,6 +506,7 @@ def fake_repos() -> dict[str, Any]:
         "audit": FakeAuditRepository(),
         "asset": FakeAssetRepository(),
         "moment_asset": FakeMomentAssetRepository(),
+        "habit_goal": FakeHabitGoalRepository(),
     }
 
 
@@ -498,6 +536,7 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     original_audit_repo = moments_routes.SqlAuditEventRepository
     original_asset_repo = moments_routes.AssetRepository
     original_moment_asset_repo = moments_routes.MomentAssetRepository
+    original_habit_goal_repo = moments_routes.SqlHabitGoalRepository
 
     moments_routes.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     moments_routes.SqlConfirmationRepository = lambda session: fake_repos["confirmation"]  # type: ignore[assignment]
@@ -506,6 +545,7 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     moments_routes.SqlAuditEventRepository = lambda session: fake_repos["audit"]  # type: ignore[assignment]
     moments_routes.AssetRepository = lambda session: fake_repos["asset"]  # type: ignore[assignment]
     moments_routes.MomentAssetRepository = lambda session: fake_repos["moment_asset"]  # type: ignore[assignment]
+    moments_routes.SqlHabitGoalRepository = lambda session: fake_repos["habit_goal"]  # type: ignore[assignment]
 
     application.dependency_overrides[deps_module.get_auth_context] = _fake_auth_context
     application.dependency_overrides[deps_module.get_authenticated_user_id] = _fake_user_id
@@ -522,6 +562,7 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     moments_routes.SqlAuditEventRepository = original_audit_repo  # type: ignore[assignment]
     moments_routes.AssetRepository = original_asset_repo  # type: ignore[assignment]
     moments_routes.MomentAssetRepository = original_moment_asset_repo  # type: ignore[assignment]
+    moments_routes.SqlHabitGoalRepository = original_habit_goal_repo  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio
@@ -711,3 +752,290 @@ async def test_delete_confirm_reuse(app: FastAPI, fake_repos: dict[str, Any]) ->
         )
     assert confirm2.status_code == 400
     assert confirm2.json()["error"]["code"] == "CONFIRMATION_USED"
+
+
+# ---- 内置记录类型（type + payload）----
+
+
+@pytest.mark.asyncio
+async def test_create_bookkeeping_moment(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    payload_body = {"amount": 38.5, "flow": "expense", "account": "微信", "category": "餐饮"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "午餐", "type": "bookkeeping", "payload": payload_body},
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "bookkeeping"
+    assert body["payload"] == payload_body
+
+
+@pytest.mark.asyncio
+async def test_create_habit_moment(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    payload_body = {"habit": "晨跑", "done": True, "unit": "公里", "count": 5}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "晨跑打卡", "type": "habit", "payload": payload_body},
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "habit"
+    assert body["payload"] == payload_body
+
+
+@pytest.mark.asyncio
+async def test_create_moment_defaults_to_general(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/v1/moments", json={"title": "自由记录"})
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "general"
+    assert body["payload"] == {}
+
+
+@pytest.mark.asyncio
+async def test_create_moment_unknown_type(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "未知类型", "type": "travel", "payload": {}},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+@pytest.mark.asyncio
+async def test_create_moment_invalid_payload(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # bookkeeping 缺必填 flow
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "记账", "type": "bookkeeping", "payload": {"amount": 10}},
+        )
+    assert resp.status_code == 400
+    body = resp.json()["error"]
+    assert body["code"] == "INVALID_ARGUMENTS"
+    assert body["details"]["type"] == "bookkeeping"
+
+
+@pytest.mark.asyncio
+async def test_create_general_with_payload_rejected(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "记账", "type": "general", "payload": {"amount": 10}},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+@pytest.mark.asyncio
+async def test_list_moments_type_filter(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/v1/moments",
+            json={
+                "title": "记账1",
+                "type": "bookkeeping",
+                "payload": {"amount": 10, "flow": "expense"},
+            },
+        )
+        await client.post(
+            "/v1/moments",
+            json={
+                "title": "记账2",
+                "type": "bookkeeping",
+                "payload": {"amount": 20, "flow": "income"},
+            },
+        )
+        await client.post(
+            "/v1/moments",
+            json={"title": "打卡", "type": "habit", "payload": {"habit": "阅读", "done": True}},
+        )
+        await client.post("/v1/moments", json={"title": "自由"})
+
+        resp = await client.get("/v1/moments", params={"type": "bookkeeping", "limit": 100})
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 2
+        assert all(item["type"] == "bookkeeping" for item in items)
+
+        resp_habit = await client.get("/v1/moments", params={"type": "habit", "limit": 100})
+    assert resp_habit.status_code == 200
+    assert len(resp_habit.json()["items"]) == 1
+    assert resp_habit.json()["items"][0]["type"] == "habit"
+
+
+@pytest.mark.asyncio
+async def test_update_moment_type_payload(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post("/v1/moments", json={"title": "自由记录"})
+        moment_id = create_resp.json()["id"]
+
+        resp = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={
+                "expectedRevision": 1,
+                "type": "bookkeeping",
+                "payload": {"amount": 66, "flow": "expense", "account": "现金"},
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "bookkeeping"
+    assert body["payload"] == {"amount": 66, "flow": "expense", "account": "现金"}
+    assert body["revision"] == 2
+    # provenance 不可篡改
+    assert body["provenance"]["source"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_update_moment_invalid_payload(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/v1/moments",
+            json={
+                "title": "记账",
+                "type": "bookkeeping",
+                "payload": {"amount": 10, "flow": "expense"},
+            },
+        )
+        moment_id = create_resp.json()["id"]
+        resp = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 1, "payload": {"amount": -5, "flow": "expense"}},
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+@pytest.mark.asyncio
+async def test_list_moments_category_tag_filter(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/v1/moments",
+            json={"title": "旅行", "category": "travel", "tags": ["西湖"]},
+        )
+        await client.post(
+            "/v1/moments",
+            json={"title": "美食", "category": "food", "tags": ["面馆"]},
+        )
+        resp_cat = await client.get("/v1/moments", params={"category": "travel", "limit": 100})
+        assert len(resp_cat.json()["items"]) == 1
+        assert resp_cat.json()["items"][0]["category"] == "travel"
+
+        resp_tag = await client.get("/v1/moments", params={"tag": "面馆", "limit": 100})
+        assert len(resp_tag.json()["items"]) == 1
+        assert resp_tag.json()["items"][0]["title"] == "美食"
+
+
+# ---- habit 打卡关联习惯目标（payload.goalId）----
+
+
+@pytest.mark.asyncio
+async def test_create_habit_with_goal_ref(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    goal_id = uuid4()
+    fake_repos["habit_goal"].seed(goal_id, USER_ID)
+    transport = ASGITransport(app=app)
+    payload_body = {"habit": "游泳", "done": True, "goalId": str(goal_id)}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "游泳打卡", "type": "habit", "payload": payload_body},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["payload"] == payload_body
+
+
+@pytest.mark.asyncio
+async def test_create_habit_with_unknown_goal_ref(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={
+                "title": "游泳打卡",
+                "type": "habit",
+                "payload": {"habit": "游泳", "done": True, "goalId": str(uuid4())},
+            },
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENTS"
+    assert "goalId" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_habit_with_invalid_goal_id_format(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={
+                "title": "游泳打卡",
+                "type": "habit",
+                "payload": {"habit": "游泳", "done": True, "goalId": "not-a-uuid"},
+            },
+        )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+# ---- 通用描述维度（persons / event，ADR-0019）----
+
+
+@pytest.mark.asyncio
+async def test_create_moment_with_persons_and_event(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={
+                "title": "家庭聚餐",
+                "persons": ["妈妈", "小王"],
+                "event": "家庭聚餐",
+                "tags": ["聚餐"],
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["persons"] == ["妈妈", "小王"]
+    assert body["event"] == "家庭聚餐"
+
+
+@pytest.mark.asyncio
+async def test_update_moment_persons_and_event(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = (await client.post("/v1/moments", json={"title": "普通记录"})).json()
+        resp = await client.patch(
+            f"/v1/moments/{created['id']}",
+            json={"expectedRevision": 1, "persons": ["同事"], "event": "项目复盘"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["persons"] == ["同事"]
+    assert body["event"] == "项目复盘"
+    assert body["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_moment_with_persons_item_too_long(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/moments",
+            json={"title": "超长人物", "persons": ["x" * 21]},
+        )
+    assert resp.status_code == 422  # Pydantic 校验拒绝
