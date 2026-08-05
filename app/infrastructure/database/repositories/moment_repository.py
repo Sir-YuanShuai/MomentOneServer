@@ -45,6 +45,8 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
         ai_summary=orm.ai_summary,
         category=MomentCategory(orm.category),
         tags=tuple(orm.tags or []),
+        persons=tuple(orm.persons or []),
+        event=orm.event_name,
         occurred_at=orm.occurred_at,
         timezone=orm.timezone,
         revision=orm.revision,
@@ -54,6 +56,8 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
         emotion=emotion,
         provenance=provenance,
         deleted_at=orm.deleted_at,
+        moment_type=orm.moment_type or "general",
+        payload=orm.payload or {},
     )
 
 
@@ -73,6 +77,8 @@ class PostgresMomentRepository:
             ai_summary=moment.ai_summary,
             category=moment.category.value,
             tags=list(moment.tags),
+            persons=list(moment.persons),
+            event_name=moment.event,
             occurred_at=moment.occurred_at,
             timezone=moment.timezone,
             location_name=moment.location.name if moment.location else None,
@@ -83,6 +89,8 @@ class PostgresMomentRepository:
             emotion_score=moment.emotion.valence if moment.emotion else None,
             provenance=moment.provenance.to_dict() if moment.provenance else None,
             revision=moment.revision,
+            moment_type=moment.moment_type or "general",
+            payload=moment.payload or {},
         )
         self._session.add(orm)
         await self._session.flush()
@@ -94,6 +102,10 @@ class PostgresMomentRepository:
         *,
         limit: int = 20,
         cursor: str | None = None,
+        moment_type: str | None = None,
+        category: str | None = None,
+        tag: str | None = None,
+        goal_id: UUID | None = None,
     ) -> tuple[list[Moment], bool, str | None]:
         stmt = (
             select(MomentORM)
@@ -106,6 +118,15 @@ class PostgresMomentRepository:
             .order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc())
             .limit(limit + 1)
         )
+
+        if moment_type:
+            stmt = stmt.where(MomentORM.moment_type == moment_type)
+        if category:
+            stmt = stmt.where(MomentORM.category == category)
+        if tag:
+            stmt = stmt.where(MomentORM.tags.contains([tag]))
+        if goal_id:
+            stmt = stmt.where(MomentORM.payload["goalId"].astext == str(goal_id))
 
         if cursor:
             # cursor 是上一页最后一条的 occurred_at + id 的组合
@@ -180,6 +201,10 @@ class PostgresMomentRepository:
             )
         if "tags" in fields:
             orm.tags = list(fields["tags"])
+        if "persons" in fields:
+            orm.persons = list(fields["persons"])
+        if "event" in fields:
+            orm.event_name = fields["event"]
         if "occurred_at" in fields:
             orm.occurred_at = fields["occurred_at"]
         if "location" in fields:
@@ -202,6 +227,10 @@ class PostgresMomentRepository:
             else:
                 orm.emotion_label = None
                 orm.emotion_score = None
+        if "moment_type" in fields:
+            orm.moment_type = fields["moment_type"]
+        if "payload" in fields:
+            orm.payload = fields["payload"] or {}
 
         orm.revision += 1
         await self._session.flush()

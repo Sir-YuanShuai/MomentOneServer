@@ -215,9 +215,25 @@ class FakeMomentRepository:
         return m
 
     async def list_by_user(
-        self, *, user_id: UUID, limit: int, cursor: str | None
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+        cursor: str | None,
+        moment_type: str | None = None,
+        category: str | None = None,
+        tag: str | None = None,
+        goal_id: UUID | None = None,
     ) -> tuple[list[Moment], bool, str | None]:
         items = [m for m in self._store.values() if m.user_id == user_id]
+        if moment_type:
+            items = [m for m in items if m.moment_type == moment_type]
+        if category:
+            items = [m for m in items if m.category.value == category]
+        if tag:
+            items = [m for m in items if tag in m.tags]
+        if goal_id:
+            items = [m for m in items if m.payload.get("goalId") == str(goal_id)]
         return items[:limit], len(items) > limit, None
 
     async def update(self, moment_id: UUID, user_id: UUID, **fields: Any) -> Moment | None:

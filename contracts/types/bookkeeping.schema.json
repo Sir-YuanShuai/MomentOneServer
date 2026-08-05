@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://moment-one.dev/contracts/types/bookkeeping.schema.json",
+  "title": "Bookkeeping Payload v1",
+  "description": "记账类型 payload 校验 Schema。字段由 Web 表单输入，AI 抽取为后续阶段。ADR-0019 扩充：账本 / 支付方式 / 是否计入收支与预算 / 关联账单。",
+  "type": "object",
+  "required": ["amount", "flow"],
+  "properties": {
+    "amount": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 9999999,
+      "description": "金额（0 ~ 9999999）"
+    },
+    "currency": {
+      "type": "string",
+      "default": "CNY",
+      "description": "币种，默认 CNY"
+    },
+    "flow": {
+      "type": "string",
+      "enum": ["expense", "income"],
+      "description": "流向：expense = 支出，income = 收入"
+    },
+    "account": {
+      "type": "string",
+      "maxLength": 30,
+      "description": "收支账户（如：微信、支付宝、现金、银行卡）"
+    },
+    "merchant": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "商家（如：海底捞、楼下便利店），可选；与地点（Moment.location）语义互补"
+    },
+    "category": {
+      "type": "string",
+      "maxLength": 30,
+      "description": "支出/收入分类（如：餐饮、交通）"
+    },
+    "ledger": {
+      "type": "string",
+      "maxLength": 30,
+      "description": "所属账本（如：日常、旅行、家用；默认账本可省略）"
+    },
+    "method": {
+      "type": "string",
+      "maxLength": 20,
+      "description": "支付/收款方式（如：微信支付、扫码、现金、转账）"
+    },
+    "countInFlow": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否计入收支统计（默认 true；false 时统计视图不聚合该笔）"
+    },
+    "countInBudget": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否计入预算（默认 true；预算为后续功能，字段先落库）"
+    },
+    "relatedBillIds": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" },
+      "maxItems": 20,
+      "description": "关联的其他账单 ID（如一笔消费拆成多笔时的关联）"
+    }
+  },
+  "additionalProperties": true
+}

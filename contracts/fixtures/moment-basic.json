@@ -6,13 +6,17 @@
   "voiceInput": "刚在西湖边散步，阳光很好",
   "aiSummary": "下午在西湖边散步，阳光很好",
   "category": "travel",
-  "tags": ["旅行", "散步", "西湖"],
+  "tags": [
+    "旅行",
+    "散步",
+    "西湖"
+  ],
   "occurredAt": "2026-07-30T15:30:00.000Z",
   "timezone": "Asia/Shanghai",
   "location": {
     "name": "西湖",
     "latitude": 30.2592,
-    "longitude": 120.1300,
+    "longitude": 120.13,
     "source": "device"
   },
   "emotion": {
@@ -29,5 +33,7 @@
   "revision": 1,
   "createdAt": "2026-07-30T15:30:05.000Z",
   "updatedAt": "2026-07-30T15:30:05.000Z",
-  "deletedAt": null
+  "deletedAt": null,
+  "type": "general",
+  "payload": {}
 }

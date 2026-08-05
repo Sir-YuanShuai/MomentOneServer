@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthContext, get_auth_context, get_authenticated_user_id
@@ -18,6 +18,9 @@ from app.infrastructure.database.repositories.audit_event_repository import (
 )
 from app.infrastructure.database.repositories.confirmation_repository import (
     SqlConfirmationRepository,
+)
+from app.infrastructure.database.repositories.habit_goal_repository import (
+    SqlHabitGoalRepository,
 )
 from app.infrastructure.database.repositories.idempotency_repository import (
     SqlIdempotencyRepository,
@@ -36,6 +39,7 @@ from app.infrastructure.storage.object_storage import (
     get_object_storage,
 )
 from app.modules.assets.domain import AssetRole, AssetState
+from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
     LocationSource,
     Moment,
@@ -99,6 +103,33 @@ def _parse_emotion(data: dict | None) -> MomentEmotion | None:
     )
 
 
+async def _validate_habit_goal_ref(
+    payload: dict | None,
+    user_id: UUID,
+    session: AsyncSession,
+) -> None:
+    """habit 打卡记录若带 payload.goalId，必须存在且归属当前用户。"""
+    if not payload or not payload.get("goalId"):
+        return
+    try:
+        goal_id = UUID(payload["goalId"])
+    except (ValueError, TypeError) as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="payload.goalId 不是合法的 UUID。",
+            status_code=400,
+        ) from exc
+    repo = SqlHabitGoalRepository(session)
+    goal = await repo.get_by_id(goal_id, user_id)
+    if goal is None:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="payload.goalId 对应的习惯目标不存在或不属于当前用户。",
+            status_code=400,
+            details={"goalId": str(goal_id)},
+        )
+
+
 def get_storage(
     settings: Settings = Depends(get_settings),
 ) -> ObjectStorage | None:
@@ -160,7 +191,11 @@ def _to_dict(moment: Moment, media: list[dict] | None = None) -> dict:
         "voiceInput": moment.voice_input,
         "aiSummary": moment.ai_summary,
         "category": moment.category.value,
+        "type": moment.moment_type,
+        "payload": moment.payload,
         "tags": list(moment.tags),
+        "persons": list(moment.persons),
+        "event": moment.event,
         "occurredAt": moment.occurred_at.isoformat(),
         "timezone": moment.timezone,
         "location": (
@@ -200,14 +235,26 @@ class CreateMomentRequest(BaseModel):
     aiSummary: str | None = Field(default=None, max_length=80)
     category: str = "experience"
     tags: list[str] = Field(default_factory=list, max_length=5)
+    persons: list[str] = Field(default_factory=list, max_length=10)
+    event: str | None = Field(default=None, max_length=50)
     occurredAt: str | None = None
     timezone: str = "UTC"
     location: dict | None = None
     emotion: dict | None = None
     provenance: dict | None = None  # 客户端可显式声明，否则服务端按 AuthContext 推断
+    type: str = "general"  # 记录类型（注册表驱动，general 兜底）
+    payload: dict | None = None  # 类型化扩展字段，按类型 Schema 校验
     assetIds: list[str] = Field(
         default_factory=list, description="已上传完成的 Asset ID 列表，按顺序关联"
     )
+
+    @field_validator("persons")
+    @classmethod
+    def _persons_item_length(cls, value: list[str]) -> list[str]:
+        for item in value:
+            if len(item) > 20:
+                raise ValueError("persons 每项不能超过 20 字")
+        return value
 
 
 class UpdateMomentRequest(BaseModel):
@@ -217,10 +264,24 @@ class UpdateMomentRequest(BaseModel):
     aiSummary: str | None = Field(default=None, max_length=80)
     category: str | None = None
     tags: list[str] | None = Field(default=None, max_length=5)
+    persons: list[str] | None = Field(default=None, max_length=10)
+    event: str | None = Field(default=None, max_length=50)
     occurredAt: str | None = None
     timezone: str | None = None
     location: dict | None = None
     emotion: dict | None = None
+    type: str | None = None  # 记录类型；None = 不修改
+    payload: dict | None = None  # 类型化扩展字段；None = 不修改，{} = 清空
+
+    @field_validator("persons")
+    @classmethod
+    def _persons_item_length(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        for item in value:
+            if len(item) > 20:
+                raise ValueError("persons 每项不能超过 20 字")
+        return value
 
 
 class DeletePreviewRequest(BaseModel):
@@ -245,12 +306,22 @@ async def list_moments(
     settings: Settings = Depends(get_settings),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
+    type: str | None = Query(
+        default=None, description="按记录类型过滤（general/bookkeeping/habit）"
+    ),
+    category: str | None = Query(default=None, description="按分类过滤"),
+    tag: str | None = Query(default=None, description="按标签过滤"),
+    goalId: str | None = Query(default=None, description="按习惯目标过滤（payload.goalId）"),
 ) -> CursorPageResponse:
     repo = PostgresMomentRepository(session)
     moments, has_more, next_cursor = await repo.list_by_user(
         user_id=user_id,
         limit=limit,
         cursor=cursor,
+        moment_type=type,
+        category=category,
+        tag=tag,
+        goal_id=UUID(goalId) if goalId else None,
     )
     items = []
     for m in moments:
@@ -301,6 +372,11 @@ async def create_moment(
     if body.occurredAt:
         occurred_at = datetime.fromisoformat(body.occurredAt.replace("Z", "+00:00"))
 
+    # 记录类型校验（D2/D3）：类型存在 + payload 符合类型 Schema
+    validate_moment_type(body.type, body.payload or {})
+    # habit 打卡关联的习惯目标归属校验（payload.goalId）
+    await _validate_habit_goal_ref(body.payload, ctx.user_id, session)
+
     moment = Moment(
         id=uuid4(),
         user_id=ctx.user_id,
@@ -310,6 +386,8 @@ async def create_moment(
         ai_summary=body.aiSummary,
         category=MomentCategory(body.category),
         tags=tuple(body.tags),
+        persons=tuple(body.persons),
+        event=body.event,
         occurred_at=occurred_at,
         timezone=body.timezone,
         revision=1,
@@ -318,6 +396,8 @@ async def create_moment(
         location=_parse_location(body.location),
         emotion=_parse_emotion(body.emotion),
         provenance=_infer_provenance(ctx, body.provenance),
+        moment_type=body.type,
+        payload=body.payload or {},
     )
 
     repo = PostgresMomentRepository(session)
@@ -460,12 +540,25 @@ async def update_moment(
         fields["category"] = MomentCategory(body.category)
     if body.tags is not None:
         fields["tags"] = tuple(body.tags)
+    if body.persons is not None:
+        fields["persons"] = tuple(body.persons)
+    if body.event is not None:
+        fields["event"] = body.event
     if body.occurredAt is not None:
         fields["occurred_at"] = datetime.fromisoformat(body.occurredAt.replace("Z", "+00:00"))
     if body.location is not None:
         fields["location"] = _parse_location(body.location)
     if body.emotion is not None:
         fields["emotion"] = _parse_emotion(body.emotion)
+
+    # 类型变更时校验：合并现有值与本次修改，按注册表校验（D2/D3）
+    if body.type is not None or body.payload is not None:
+        merged_type = body.type or existing.moment_type
+        merged_payload = body.payload if body.payload is not None else existing.payload
+        validate_moment_type(merged_type, merged_payload)
+        await _validate_habit_goal_ref(merged_payload, user_id, session)
+        fields["moment_type"] = merged_type
+        fields["payload"] = merged_payload
 
     moment = await repo.update(UUID(moment_id), user_id, **fields)
     if moment is None:

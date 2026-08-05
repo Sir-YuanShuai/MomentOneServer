@@ -6,6 +6,7 @@ from app.infrastructure.database.models.device import (
     Device,
     DeviceBinding,
 )
+from app.infrastructure.database.models.habit_goal import HabitGoal
 from app.infrastructure.database.models.idempotency import IdempotencyKey
 from app.infrastructure.database.models.identity import UserIdentity
 from app.infrastructure.database.models.moment import Moment, User
@@ -17,6 +18,7 @@ __all__ = [
     "BindingCode",
     "Device",
     "DeviceBinding",
+    "HabitGoal",
     "IdempotencyKey",
     "Moment",
     "MomentAsset",

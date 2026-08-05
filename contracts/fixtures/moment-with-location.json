@@ -6,7 +6,10 @@
   "voiceInput": "刚在公司楼下吃了一碗面",
   "aiSummary": "在公司楼下面馆吃牛肉面",
   "category": "food",
-  "tags": ["美食", "面馆"],
+  "tags": [
+    "美食",
+    "面馆"
+  ],
   "occurredAt": "2026-07-28T12:15:00.000Z",
   "timezone": "Asia/Shanghai",
   "location": {
@@ -27,5 +30,7 @@
   "revision": 2,
   "createdAt": "2026-07-28T12:15:10.000Z",
   "updatedAt": "2026-07-28T18:00:00.000Z",
-  "deletedAt": null
+  "deletedAt": null,
+  "type": "general",
+  "payload": {}
 }

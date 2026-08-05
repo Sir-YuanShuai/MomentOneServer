@@ -1,0 +1,30 @@
+{
+  "id": "a7b8c9d0-789a-bcde-f012-345678901234",
+  "userId": "00000000-0000-4000-8000-000000000001",
+  "title": "晨跑打卡",
+  "description": "今天完成了晨跑",
+  "voiceInput": null,
+  "aiSummary": null,
+  "category": "habit",
+  "type": "habit",
+  "payload": {
+    "habit": "晨跑",
+    "done": true,
+    "unit": "公里",
+    "count": 5,
+    "goalId": "c9d0e1f2-901a-bcde-f012-345678901234"
+  },
+  "tags": ["习惯"],
+  "occurredAt": "2026-08-06T07:30:00.000Z",
+  "timezone": "Asia/Shanghai",
+  "location": null,
+  "emotion": null,
+  "provenance": {
+    "source": "web",
+    "clientId": "web-browser-001"
+  },
+  "revision": 1,
+  "createdAt": "2026-08-06T07:30:05.000Z",
+  "updatedAt": "2026-08-06T07:30:05.000Z",
+  "deletedAt": null
+}

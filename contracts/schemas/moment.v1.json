@@ -49,11 +49,32 @@
       "enum": ["experience", "habit", "travel", "food", "growth", "emotion"],
       "description": "Primary category for the moment."
     },
+    "type": {
+      "type": "string",
+      "default": "general",
+      "description": "Structured record type (ADR-0017). Registry-driven: general (free-form fallback) / bookkeeping / habit. Orthogonal to category; validated against the type payload schema in contracts/types/."
+    },
+    "payload": {
+      "type": "object",
+      "default": {},
+      "description": "Typed extension fields validated against the type schema (contracts/types/*.schema.json). Always {} for type=general. Payload validity is enforced by the type schema, not expanded here."
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string" },
       "maxItems": 5,
       "description": "User or AI assigned tags, deduplicated, max 5."
+    },
+    "persons": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 20 },
+      "maxItems": 10,
+      "description": "People involved in the moment (ADR-0019). Optional, e.g. ['妈妈', '小王']."
+    },
+    "event": {
+      "type": ["string", "null"],
+      "maxLength": 50,
+      "description": "Event/activity name this moment belongs to (ADR-0019). Optional, e.g. '家庭聚餐'."
     },
     "occurredAt": {
       "type": "string",
@@ -161,5 +182,5 @@
     }
   },
   "additionalProperties": false,
-  "$comment": "v1 fields are frozen. syncState is client-only and excluded from server responses. New fields require an ADR and schema version bump."
+  "$comment": "v1 fields are frozen. syncState is client-only and excluded from server responses. New fields require an ADR and schema version bump. type/payload were added as optional fields via ADR-0017 (record types MVP); persons/event added as optional description dimensions via ADR-0019; no v2 bump since all are additive and optional."
 }

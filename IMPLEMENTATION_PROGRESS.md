@@ -40,6 +40,8 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | ai_summary | TEXT | AI 摘要（≤80 字，可选） |
 | category | VARCHAR(20) | 分类 |
 | tags | TEXT[] | 标签数组（≤5） |
+| persons | TEXT[] | 通用描述维度（ADR-0019）：人物（≤10 个，每项 ≤20 字，可空） |
+| event_name | VARCHAR(50) | 通用描述维度（ADR-0019）：所属事件（可空） |
 | occurred_at | TIMESTAMPTZ | 发生时间 |
 | timezone | VARCHAR(50) | 时区 |
 | location_name | VARCHAR(200) | 位置名称（可选） |
@@ -110,7 +112,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET | `/v1/system/health` | 已实现 | 健康检查 |
 | GET | `/v1/system/version` | 已实现 | 版本信息 |
 | POST | `/v1/moments` | 已实现 | 创建 Moment（支持 assetIds 关联媒体） |
-| GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页，响应含 media 数组） |
+| GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页，支持 type/category/tag/goalId 过滤，响应含 media 数组） |
 | GET | `/v1/moments/{id}` | 已实现 | 详情（含 media 数组 + downloadUrl） |
 | PATCH | `/v1/moments/{id}` | 已实现 | 修改（乐观锁） |
 | DELETE | `/v1/moments/{id}` | 已实现 | 软删除（两阶段确认） |
@@ -123,6 +125,12 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | DELETE | `/v1/device/bindings/{id}` | 已实现 | 撤销绑定（吊销 token） |
 | PATCH | `/v1/device/bindings/{id}` | 已实现 | 调整 scope |
 | POST | `/oauth/token` | 已实现 | OAuth 2.1 Token 端点（眼镜端，无 Casdoor 鉴权） |
+| POST | `/v1/habit-goals` | 已实现 | 创建习惯目标（ADR-0018） |
+| GET | `/v1/habit-goals` | 已实现 | 习惯目标列表 |
+| GET | `/v1/habit-goals/{id}` | 已实现 | 习惯目标详情 |
+| PATCH | `/v1/habit-goals/{id}` | 已实现 | 修改习惯目标（乐观锁） |
+| POST | `/v1/habit-goals/{id}/delete-preview` | 已实现 | 删除预览（两阶段） |
+| POST | `/v1/habit-goals/delete-confirm` | 已实现 | 删除确认 |
 
 ## 已实现的迁移
 
@@ -134,12 +142,19 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | `0004_create_pending_confirmations` | 创建 pending_confirmations 表（替代内存态两阶段删除） |
 | `0005_create_idempotency_keys` | 创建 idempotency_keys 表（写操作去重） |
 | `0006_create_phase1_identity_revision_audit` | 创建 user_identities / moment_revisions / audit_events 表 |
+| `0007_create_assets_and_moment_assets` | 创建 assets / moment_assets 表 + moments 推荐约束 |
+| `0008_add_moment_type_payload` | moments 表新增 moment_type / payload 两列（内置记录类型，ADR-0017） |
+| `0009_create_habit_goals` | 创建 habit_goals 表（习惯目标实体，ADR-0018） |
+| `0010_add_persons_and_event` | moments 表新增 persons / event_name 两列（通用描述维度，ADR-0019） |
+| `0011_add_frequency_and_color_to_habit_goals` | habit_goals 表新增 frequency / times_per_week / color 列（对标习惯打卡 App，ADR-0020） |
 
 ## 已实现的模块
 
 | 模块 | 路径 | 状态 |
 |---|---|---|
 | Moment 领域 | `app/modules/moments/` | 已实现 |
+| 内置记录类型注册表 | `app/modules/moment_types/` + `contracts/types/*.schema.json` | 已实现（bookkeeping / habit / general；validate(type, payload) 按 JSON Schema 校验） |
+| 习惯目标（HabitGoal） | `app/modules/habit_goals/` + `app/infrastructure/database/repositories/habit_goal_repository.py` + `app/api/routes/habit_goals.py` | 已实现（CRUD + 两阶段删除；打卡 payload.goalId 归属校验） |
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
@@ -170,5 +185,8 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Binding Code Generator 单元测试 | `tests/unit/test_binding_code_generator.py` | 已实现 |
 | DeviceBindingService 单元测试 | `tests/unit/test_device_binding_service.py` | 已实现 |
 | OAuth Token API 测试 | `tests/api/test_oauth_token.py` | 已实现 |
-| Moments API 测试 | `tests/api/test_moments_api.py` | 已实现（含 assetIds 关联 + media 响应） |
+| Moments API 测试 | `tests/api/test_moments_api.py` | 已实现（含 assetIds 关联 + media 响应 + type/payload 校验与过滤） |
+| 内置记录类型单测 | `tests/unit/test_moment_types.py` | 已实现（bookkeeping / habit / general 校验） |
+| 习惯目标 API 测试 | `tests/api/test_habit_goals_api.py` | 已实现（CRUD + revision 冲突 + 两阶段删除） |
+| 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
 | Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 媒体集成） |

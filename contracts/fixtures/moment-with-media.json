@@ -6,7 +6,10 @@
   "voiceInput": "今天第一次带妈妈看海",
   "aiSummary": "第一次带妈妈看海",
   "category": "experience",
-  "tags": ["家庭", "旅行"],
+  "tags": [
+    "家庭",
+    "旅行"
+  ],
   "occurredAt": "2026-08-02T10:00:00.000Z",
   "timezone": "Asia/Shanghai",
   "location": {
@@ -45,5 +48,7 @@
   "revision": 1,
   "createdAt": "2026-08-02T10:00:05.000Z",
   "updatedAt": "2026-08-02T10:00:05.000Z",
-  "deletedAt": null
+  "deletedAt": null,
+  "type": "general",
+  "payload": {}
 }

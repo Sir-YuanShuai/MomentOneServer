@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -102,3 +102,9 @@ class Moment:
     emotion: MomentEmotion | None = None
     provenance: MomentProvenance | None = None
     deleted_at: datetime | None = None
+    # 记录类型（D2/D3）：moment_type 默认 "general"，payload 默认 {}
+    moment_type: str = "general"
+    payload: dict = field(default_factory=dict)
+    # 通用描述维度（ADR-0019）：人物 / 事件，均可留空
+    persons: tuple[str, ...] = ()
+    event: str | None = None
