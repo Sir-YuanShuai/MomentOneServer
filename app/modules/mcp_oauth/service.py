@@ -32,7 +32,11 @@ from app.infrastructure.database.repositories.user_repository import resolve_use
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.mcp.scope import ALL_SCOPES
-from app.modules.mcp_oauth.repositories import McpAuthCodeRepository, McpClientRepository
+from app.modules.mcp_oauth.repositories import (
+    McpAuthCodeRepository,
+    McpAuthorizationRepository,
+    McpClientRepository,
+)
 
 GRANT_AUTHORIZATION_CODE = "authorization_code"
 GRANT_REFRESH_TOKEN = "refresh_token"
@@ -172,6 +176,7 @@ class MomentOAuthService:
         self._session = session
         self._clients = McpClientRepository(session)
         self._codes = McpAuthCodeRepository(session)
+        self._authorizations = McpAuthorizationRepository(session)
         self._casdoor = CasdoorProxyClient(settings)
         self._casdoor_verifier = CasdoorTokenVerifier(settings)
 
@@ -388,6 +393,15 @@ class MomentOAuthService:
         )
         # 消费 casdoor_txn
         await self._codes.mark_consumed(code_id=txn.id)
+
+        # 记录授权关系（Web 端可查看/调整/撤销）
+        client = await self._clients.get_by_client_id(txn.client_id)
+        await self._authorizations.upsert(
+            user_id=user_id,
+            client_id=txn.client_id,
+            client_name=client.client_name if client else None,
+            scope=txn.scope or DEFAULT_SCOPE,
+        )
 
         # 302 回客户端 redirect_uri
         sep = "&" if "?" in (txn.redirect_uri or "") else "?"

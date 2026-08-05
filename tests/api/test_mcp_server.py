@@ -88,8 +88,16 @@ def _make_settings(tmp_path: Path) -> Settings:
     )
 
 
+class _FakeActive:
+    """active 状态记录（binding 或 mcp_authorization 通用）。"""
+
+    status = "active"
+    last_active_at: object = None
+    updated_at: object = None
+
+
 class FakeBindingSession:
-    """验证 QR Binding token 时返回 active 绑定的假 session。"""
+    """验证 token 时返回 active 绑定的假 session（binding + mcp_authorization 通用）。"""
 
     async def __aenter__(self) -> FakeBindingSession:
         return self
@@ -100,6 +108,9 @@ class FakeBindingSession:
     async def execute(self, stmt: object) -> FakeResult:
         return FakeResult()
 
+    async def flush(self) -> None:
+        pass
+
     async def commit(self) -> None:
         pass
 
@@ -108,11 +119,8 @@ class FakeBindingSession:
 
 
 class FakeResult:
-    def scalar_one_or_none(self) -> object:
-        class _Binding:
-            status = "active"
-
-        return _Binding()
+    def scalar_one_or_none(self) -> _FakeActive:
+        return _FakeActive()
 
 
 @contextlib.asynccontextmanager

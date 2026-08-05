@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.database.models import McpOAuthClient, McpOAuthCode
+from app.infrastructure.database.models import McpAuthorization, McpOAuthClient, McpOAuthCode
 
 
 class McpClientRepository:
@@ -98,3 +98,118 @@ class McpAuthCodeRepository:
 
 
 __all__ = ["McpAuthCodeRepository", "McpClientRepository"]
+
+
+class McpAuthorizationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def upsert(
+        self,
+        *,
+        user_id: UUID,
+        client_id: str,
+        client_name: str | None,
+        scope: str,
+    ) -> McpAuthorization:
+        """授权完成时创建/更新授权关系（重新授权 = 更新 scope + 恢复 active）。"""
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.user_id == user_id,
+            McpAuthorization.client_id == client_id,
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        now = datetime.now(UTC)
+        if orm is None:
+            orm = McpAuthorization(
+                id=uuid4(),
+                user_id=user_id,
+                client_id=client_id,
+                client_name=client_name,
+                scope=scope,
+                status="active",
+                last_active_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            self._session.add(orm)
+        else:
+            orm.scope = scope
+            orm.client_name = client_name or orm.client_name
+            orm.status = "active"
+            orm.revoked_at = None
+            orm.last_active_at = now
+            orm.updated_at = now
+        await self._session.flush()
+        return orm
+
+    async def get_by_user_and_client(
+        self, user_id: UUID, client_id: str
+    ) -> McpAuthorization | None:
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.user_id == user_id,
+            McpAuthorization.client_id == client_id,
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_user(self, user_id: UUID) -> list[McpAuthorization]:
+        stmt = (
+            select(McpAuthorization)
+            .where(McpAuthorization.user_id == user_id)
+            .order_by(McpAuthorization.created_at.desc())
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def touch_active(self, *, user_id: UUID, client_id: str) -> None:
+        """token 验证时更新 last_active_at（active 授权）。"""
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.user_id == user_id,
+            McpAuthorization.client_id == client_id,
+            McpAuthorization.status == "active",
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is not None:
+            orm.last_active_at = datetime.now(UTC)
+            orm.updated_at = datetime.now(UTC)
+            await self._session.flush()
+
+    async def update_scope(
+        self, *, authorization_id: UUID, user_id: UUID, scope: str
+    ) -> McpAuthorization | None:
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.id == authorization_id,
+            McpAuthorization.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is None:
+            return None
+        orm.scope = scope
+        orm.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return orm
+
+    async def revoke(self, *, authorization_id: UUID, user_id: UUID) -> McpAuthorization | None:
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.id == authorization_id,
+            McpAuthorization.user_id == user_id,
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is None:
+            return None
+        orm.status = "revoked"
+        orm.revoked_at = datetime.now(UTC)
+        orm.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return orm
+
+
+__all__ = [
+    "McpAuthorizationRepository",
+    "McpAuthCodeRepository",
+    "McpClientRepository",
+]

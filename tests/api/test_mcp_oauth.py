@@ -78,11 +78,33 @@ def _make_settings(tmp_path: Path) -> Settings:
     )
 
 
+class _FakeExecResult:
+    def scalar_one_or_none(self) -> None:
+        return None
+
+    def scalars(self) -> _FakeScalars:
+        return _FakeScalars()
+
+
+class _FakeScalars:
+    def all(self) -> list:
+        return []
+
+
 class FakeSession:
     async def commit(self) -> None:
         pass
 
     async def rollback(self) -> None:
+        pass
+
+    async def execute(self, stmt: object) -> _FakeExecResult:
+        return _FakeExecResult()
+
+    async def flush(self) -> None:
+        pass
+
+    def add(self, orm: object) -> None:
         pass
 
 
