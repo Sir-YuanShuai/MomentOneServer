@@ -142,6 +142,7 @@ class FakeCode:
     state: str | None
     code_challenge: str | None
     casdoor_code_verifier: str | None
+    resource: str | None
     user_id: UUID | None
     status: str
     expires_at: datetime
@@ -162,6 +163,7 @@ class FakeCodeRepo:
         state: str | None,
         code_challenge: str | None,
         casdoor_code_verifier: str | None,
+        resource: str | None,
         user_id: UUID | None,
         expires_at: datetime,
     ) -> FakeCode:
@@ -175,6 +177,7 @@ class FakeCodeRepo:
             state=state,
             code_challenge=code_challenge,
             casdoor_code_verifier=casdoor_code_verifier,
+            resource=resource,
             user_id=user_id,
             status="pending",
             expires_at=expires_at,

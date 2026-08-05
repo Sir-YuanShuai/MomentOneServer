@@ -56,6 +56,7 @@ class McpOAuthCode(Base):
     state: Mapped[str | None] = mapped_column(Text, nullable=True)  # 客户端 state（原样回传）
     code_challenge: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 客户端 PKCE
     casdoor_code_verifier: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resource: Mapped[str | None] = mapped_column(String(512), nullable=True)  # RFC 8707 资源指示符
     user_id: Mapped[UUID | None] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
