@@ -112,7 +112,14 @@ class McpAuthorizationRepository:
         client_name: str | None,
         scope: str,
     ) -> McpAuthorization:
-        """授权完成时创建/更新授权关系（重新授权 = 更新 scope + 恢复 active）。"""
+        """授权完成时创建/更新授权关系。
+
+        - 无记录（首次授权）→ 用本次授权请求的 scope 创建
+        - 已有 active 记录 → **保留用户已配置的 scope**（Web 端调整过的不被
+          客户端重连覆盖——ChatGPT 重连只请求 moments.read，不能把用户
+          已授予的 moments.write 重置掉）
+        - 已有 revoked 记录 → 重新授权，用本次请求 scope
+        """
         stmt = select(McpAuthorization).where(
             McpAuthorization.user_id == user_id,
             McpAuthorization.client_id == client_id,
@@ -133,7 +140,13 @@ class McpAuthorizationRepository:
                 updated_at=now,
             )
             self._session.add(orm)
+        elif orm.status == "active":
+            # 保留用户配置的 scope（Web 端可能已调整），仅刷新活跃信息
+            orm.client_name = client_name or orm.client_name
+            orm.last_active_at = now
+            orm.updated_at = now
         else:
+            # revoked → 重新授权
             orm.scope = scope
             orm.client_name = client_name or orm.client_name
             orm.status = "active"
