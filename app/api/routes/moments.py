@@ -75,6 +75,11 @@ def _infer_provenance(ctx: AuthContext, body_provenance: dict | None) -> MomentP
             source=ProvenanceSource.ROKID,
             device_id=ctx.device_id,
         )
+    if ctx.method == "mcp":
+        return MomentProvenance(
+            source=ProvenanceSource.MCP,
+            client_id=ctx.client_id,
+        )
     return MomentProvenance(source=ProvenanceSource.WEB)
 
 
@@ -101,6 +106,15 @@ def _parse_emotion(data: dict | None) -> MomentEmotion | None:
         valence=data.get("valence"),
         arousal=data.get("arousal"),
     )
+
+
+def _actor_type(ctx: AuthContext) -> str:
+    """审计 actorType：casdoor→web / glasses→device / mcp→mcp。"""
+    if ctx.method == "glasses":
+        return "device"
+    if ctx.method == "mcp":
+        return "mcp"
+    return "web"
 
 
 async def _validate_habit_goal_ref(
@@ -459,8 +473,8 @@ async def create_moment(
     audit_repo = SqlAuditEventRepository(session)
     await audit_repo.append(
         user_id=ctx.user_id,
-        actor_type="web" if ctx.method == "casdoor" else "device",
-        actor_id=str(ctx.device_id) if ctx.method == "glasses" else None,
+        actor_type=_actor_type(ctx),
+        actor_id=str(ctx.device_id) if ctx.method == "glasses" else ctx.client_id,
         event_type="moment.created",
         resource_type="moment",
         resource_id=created.id,
@@ -584,8 +598,8 @@ async def update_moment(
     audit_repo = SqlAuditEventRepository(session)
     await audit_repo.append(
         user_id=user_id,
-        actor_type="web" if ctx.method == "casdoor" else "device",
-        actor_id=str(ctx.device_id) if ctx.method == "glasses" else None,
+        actor_type=_actor_type(ctx),
+        actor_id=str(ctx.device_id) if ctx.method == "glasses" else ctx.client_id,
         event_type="moment.updated",
         resource_type="moment",
         resource_id=moment.id,

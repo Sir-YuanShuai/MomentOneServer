@@ -1,4 +1,4 @@
-.PHONY: install dev check format lint type test test-integration db-up db-down db-reset db-logs migrate migrate-new compose-up compose-down compose-logs compose-migrate
+.PHONY: install dev check format lint type test test-integration db-up db-down db-reset db-logs migrate migrate-new compose-up compose-down compose-logs compose-migrate mcp-apps
 
 PYTHON ?= .venv/bin/python
 DOCKER_COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif docker-compose version >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
@@ -47,6 +47,9 @@ migrate:
 migrate-new:
 	@test -n "$(name)" || (echo 'Usage: make migrate-new name="add moments table"' && exit 1)
 	$(PYTHON) -m alembic revision --autogenerate -m "$(name)"
+
+mcp-apps:
+	cd mcp_apps/bookkeeping && npm run build
 
 compose-up:
 	$(DOCKER_COMPOSE) up -d --build

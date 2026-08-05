@@ -37,3 +37,7 @@ logs/
 
 # Test-generated keys
 *.pem
+
+# MCP Apps UI（node 构建产物不入库）
+mcp_apps/bookkeeping/node_modules/
+mcp_apps/bookkeeping/dist/

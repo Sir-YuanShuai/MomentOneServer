@@ -33,9 +33,11 @@ class AuthContext:
     """鉴权上下文，携带 user_id 和来源信息（用于 provenance 推断）。"""
 
     user_id: UUID
-    method: str  # "casdoor" | "glasses"
+    method: str  # "casdoor" | "glasses" | "mcp"
     device_id: str | None = None
     binding_id: UUID | None = None
+    client_id: str | None = None
+    scope: tuple[str, ...] | None = None
 
 
 def _get_casdoor_verifier(settings: Settings = Depends(get_settings)) -> CasdoorTokenVerifier:
@@ -55,22 +57,44 @@ def _peek_issuer(token: str) -> str | None:
         return None
 
 
-async def _verify_glasses_token(
+async def _verify_server_issued_token(
     token: str,
     jwt_issuer: JwtIssuer,
     session: AsyncSession,
 ) -> AuthContext:
-    """眼镜端 access_token 鉴权路径。
+    """Server 自签 RS256 token 鉴权路径（眼镜端 + MCP OAuth 双形态）。
 
-    验签 → 取 sub(本地 user_id) + binding_id + device_id → 校验 binding active → 返回 AuthContext。
+    验签后按 claims 区分：
+    - 带 binding_id → 眼镜端 QR Binding token（校验 binding 仍 active）
+    - grant=authorization_code → MCP OAuth token（PKCE 代理签发，无绑定关系）
     """
     payload = jwt_issuer.verify_access_token(token)
     user_id = UUID(payload["sub"])
-    binding_id = UUID(payload["binding_id"])
+    scope = tuple((payload.get("scope") or "").split())
+    grant = payload.get("grant")
+
+    if grant == "authorization_code":
+        # MCP OAuth（Authorization Code + PKCE 代理）token
+        return AuthContext(
+            user_id=user_id,
+            method="mcp",
+            client_id=payload.get("client_id"),
+            scope=scope,
+        )
+
+    # 眼镜端 QR Binding token：必须带 binding_id
+    binding_id = payload.get("binding_id")
+    if binding_id is None:
+        raise ApplicationError(
+            code="TOKEN_INVALID",
+            message="token 缺少 binding_id，无法识别授权来源。",
+            status_code=401,
+        )
+    binding_uuid = UUID(binding_id)
     device_id = payload.get("device_id")
 
     # 校验 binding 仍 active，收紧撤销后 access_token 的可用窗口
-    stmt = select(DeviceBindingORM).where(DeviceBindingORM.id == binding_id)
+    stmt = select(DeviceBindingORM).where(DeviceBindingORM.id == binding_uuid)
     result = await session.execute(stmt)
     binding = result.scalar_one_or_none()
     if binding is None or binding.status != BindingStatus.ACTIVE.value:
@@ -84,7 +108,8 @@ async def _verify_glasses_token(
         user_id=user_id,
         method="glasses",
         device_id=device_id,
-        binding_id=binding_id,
+        binding_id=binding_uuid,
+        scope=scope,
     )
 
 
@@ -111,7 +136,7 @@ async def get_auth_context(
     issuer = _peek_issuer(token)
 
     if issuer == jwt_issuer.issuer:
-        return await _verify_glasses_token(token, jwt_issuer, session)
+        return await _verify_server_issued_token(token, jwt_issuer, session)
 
     # Casdoor OIDC 路径
     user_id = await resolve_user_id(session, casdoor_verifier, token)

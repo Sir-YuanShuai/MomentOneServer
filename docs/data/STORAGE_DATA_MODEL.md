@@ -489,6 +489,45 @@ deleted_at timestamptz                  -- Tombstone，删除后历史打卡记�
 - `refresh_token_hash` 只存哈希，不存明文 Token
 - Moment 的 `provenance.deviceId` 为逻辑引用 `devices.id`（JSONB 内不做物理 FK，由应用层校验），可追溯每条 Moment 来自哪副眼镜
 
+### 5.13 `mcp_oauth_clients`（MCP OAuth 客户端，RFC 7591 DCR）
+
+MCP Host（Claude Desktop / ChatGPT 等）动态注册的 OAuth 客户端。MCP Server 作为
+OAuth 授权服务器代理（authorize/token/register 在 MomentOneServer 侧），客户端注册
+必须持久化——重启后已注册的 client_id 不能丢失。
+
+| 列 | 推荐类型 | Null | 说明 |
+|---|---|---:|---|
+| `id` | `uuid` | 否 | 主键 |
+| `client_id` | `varchar(128)` | 否 | 唯一，DCR 签发（`momentone-<hex>`） |
+| `client_name` | `varchar(200)` | 是 | 客户端名称 |
+| `redirect_uris` | `jsonb` | 否 | 允许的回调 URL 列表 |
+| `scope` | `varchar(512)` | 否 | 允许的 scope（空格分隔，默认 `moments.read`） |
+| `grant_types` | `jsonb` | 否 | 允许的 grant（authorization_code / refresh_token） |
+| `token_endpoint_auth_method` | `varchar(32)` | 否 | 公共客户端恒为 `none`（PKCE 强制） |
+| `status` | `varchar(16)` | 否 | `active` / `revoked` |
+| `created_at` / `updated_at` | `timestamptz` | 否 | 审计时间 |
+
+### 5.14 `mcp_oauth_codes`（MCP OAuth 授权码与事务状态）
+
+授权码（Authorization Code）+ Casdoor 跳转事务状态（dual-PKCE 的 code_verifier、
+客户端 state、PKCE challenge）。
+
+| 列 | 推荐类型 | Null | 说明 |
+|---|---|---:|---|
+| `id` | `uuid` | 否 | 主键 |
+| `code` | `varchar(128)` | 否 | 唯一：casdoor_state 或我方授权码（opaque） |
+| `kind` | `varchar(16)` | 否 | `casdoor_txn`（授权前） / `auth_code`（授权后） |
+| `client_id` | `varchar(128)` | 否 | 关联 mcp_oauth_clients.client_id（逻辑引用） |
+| `redirect_uri` | `text` | 是 | 客户端回调（授权时校验） |
+| `scope` | `varchar(512)` | 是 | 本次授权的 scope |
+| `state` | `text` | 是 | 客户端 state（原样回传） |
+| `code_challenge` | `varchar(128)` | 是 | 客户端 PKCE S256 challenge |
+| `casdoor_code_verifier` | `varchar(128)` | 是 | 我方对 Casdoor 的 PKCE verifier（dual-PKCE） |
+| `user_id` | `uuid` | 是 | 授权完成后绑定的本地用户（REFERENCES users(id)） |
+| `status` | `varchar(16)` | 否 | `pending` / `consumed` |
+| `expires_at` | `timestamptz` | 否 | 授权码/事务过期时间（默认 10 分钟） |
+| `created_at` | `timestamptz` | 否 | 创建时间 |
+
 ## 6. PostgreSQL 与 MinIO 的对应关系
 
 推荐对象 Key：

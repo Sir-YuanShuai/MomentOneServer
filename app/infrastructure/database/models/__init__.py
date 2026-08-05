@@ -9,6 +9,7 @@ from app.infrastructure.database.models.device import (
 from app.infrastructure.database.models.habit_goal import HabitGoal
 from app.infrastructure.database.models.idempotency import IdempotencyKey
 from app.infrastructure.database.models.identity import UserIdentity
+from app.infrastructure.database.models.mcp_oauth import McpOAuthClient, McpOAuthCode
 from app.infrastructure.database.models.moment import Moment, User
 from app.infrastructure.database.models.moment_revision import MomentRevision
 
@@ -20,6 +21,8 @@ __all__ = [
     "DeviceBinding",
     "HabitGoal",
     "IdempotencyKey",
+    "McpOAuthClient",
+    "McpOAuthCode",
     "Moment",
     "MomentAsset",
     "MomentRevision",

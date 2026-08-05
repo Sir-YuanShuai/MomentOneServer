@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.request_context import request_id_context
 from app.infrastructure.database.session import init_database
+from app.modules.mcp.endpoint import McpComponent
 
 logger = structlog.get_logger()
 
@@ -33,15 +34,21 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             request_id_context.reset(token)
 
 
-def create_application(settings: Settings | None = None) -> FastAPI:
+def create_application(
+    settings: Settings | None = None,
+    mcp_component: McpComponent | None = None,
+) -> FastAPI:
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
+
+    mcp_component = mcp_component or McpComponent(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await logger.ainfo("application_started", environment=resolved_settings.env)
         db = init_database(resolved_settings)
-        yield
+        async with mcp_component.run():
+            yield
         await db.dispose()
         await logger.ainfo("application_stopped")
 
@@ -66,4 +73,6 @@ def create_application(settings: Settings | None = None) -> FastAPI:
 
     register_error_handlers(app)
     app.include_router(api_router)
+    # MCP Streamable HTTP 端点（认证中间件由 SDK streamable_http_app 装配）
+    app.mount("/", mcp_component.asgi_app)
     return app
