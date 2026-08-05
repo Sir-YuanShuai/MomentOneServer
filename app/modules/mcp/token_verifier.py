@@ -110,17 +110,20 @@ class MomentTokenVerifier:
         client_id = payload.get("client_id")
 
         if grant == "authorization_code":
-            # MCP OAuth token：校验授权关系仍 active（Web 端撤销后立即失效）
+            # MCP OAuth token：校验授权关系仍 active（Web 端撤销后立即失效），
+            # 且 scope 以授权记录（mcp_authorizations）为准——Web 端调整 scope
+            # 后**无需重连/刷新，下一次调用即实时生效**（token 里的 scope 仅作签发快照）
             async with self._make_session() as session:
                 repo = McpAuthorizationRepository(session)
                 authorization = await repo.get_by_user_and_client(user_id, client_id or "")
                 if authorization is None or authorization.status != "active":
                     return None
+                effective_scope = parse_scopes(authorization.scope)
                 await repo.touch_active(user_id=user_id, client_id=client_id or "")
             return AccessToken(
                 token=token,
                 client_id=client_id or "mcp-oauth",
-                scopes=[*scope],
+                scopes=[*effective_scope],
                 subject=str(user_id),
                 claims={
                     "method": "mcp",

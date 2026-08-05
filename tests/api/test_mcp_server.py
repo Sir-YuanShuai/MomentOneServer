@@ -91,13 +91,21 @@ def _make_settings(tmp_path: Path) -> Settings:
 class _FakeActive:
     """active 状态记录（binding 或 mcp_authorization 通用）。"""
 
-    status = "active"
-    last_active_at: object = None
-    updated_at: object = None
+    def __init__(self, scope: str) -> None:
+        self.status = "active"
+        self.scope = scope
+        self.last_active_at: object = None
+        self.updated_at: object = None
 
 
 class FakeBindingSession:
-    """验证 token 时返回 active 绑定的假 session（binding + mcp_authorization 通用）。"""
+    """验证 token 时返回 active 绑定的假 session（binding + mcp_authorization 通用）。
+
+    scope 参数模拟 mcp_authorizations.scope（权限以授权记录为准）。
+    """
+
+    def __init__(self, scope: str = "moments.read moments.write") -> None:
+        self._scope = scope
 
     async def __aenter__(self) -> FakeBindingSession:
         return self
@@ -106,7 +114,7 @@ class FakeBindingSession:
         return None
 
     async def execute(self, stmt: object) -> FakeResult:
-        return FakeResult()
+        return FakeResult(self._scope)
 
     async def flush(self) -> None:
         pass
@@ -119,13 +127,20 @@ class FakeBindingSession:
 
 
 class FakeResult:
+    def __init__(self, scope: str) -> None:
+        self._scope = scope
+
     def scalar_one_or_none(self) -> _FakeActive:
-        return _FakeActive()
+        return _FakeActive(self._scope)
+
+
+# 测试用 mcp_authorizations.scope（权限以授权记录为准）
+FAKE_AUTH_SCOPE = "moments.read moments.write"
 
 
 @contextlib.asynccontextmanager
 async def _binding_session_factory() -> AsyncGenerator[FakeBindingSession]:
-    async with FakeBindingSession() as session:
+    async with FakeBindingSession(FAKE_AUTH_SCOPE) as session:
         yield session
 
 
@@ -598,30 +613,39 @@ async def test_bookkeeping_create_signature_rejection(app: FastAPI, tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_bookkeeping_create_scope_denied(app: FastAPI, tmp_path: Path) -> None:
-    """只有 moments.read 的 token 调写工具 → SCOPE_DENIED。"""
-    settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read",))
+    """授权记录只有 moments.read 时（权限以授权记录为准），写工具 → SCOPE_DENIED。"""
+    import sys
 
-    async with _mcp_client(app) as client:
-        session_id = await _initialize(client, token)
-        data = await _post(
-            client,
-            session_id,
-            token,
-            {
-                "jsonrpc": "2.0",
-                "id": 6,
-                "method": "tools/call",
-                "params": {
-                    "name": "bookkeeping_create",
-                    "arguments": {
-                        "amount": 10,
-                        "flow": "expense",
-                        "occurredAt": "2026-08-05T12:30:00+08:00",
+    mod = sys.modules[__name__]  # type: ignore[assignment]  # pytest 实际模块
+
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    original_scope = mod.FAKE_AUTH_SCOPE  # type: ignore[attr-defined]
+    mod.FAKE_AUTH_SCOPE = "moments.read"  # type: ignore[attr-defined]  # 授权记录只有读
+    try:
+        async with _mcp_client(app) as client:
+            session_id = await _initialize(client, token)
+            data = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "bookkeeping_create",
+                        "arguments": {
+                            "amount": 10,
+                            "flow": "expense",
+                            "occurredAt": "2026-08-05T12:30:00+08:00",
+                        },
                     },
                 },
-            },
-        )
+            )
+    finally:
+        mod.FAKE_AUTH_SCOPE = original_scope  # type: ignore[attr-defined]
     assert data["result"]["isError"] is True
     assert data["result"]["structuredContent"]["error"]["code"] == "SCOPE_DENIED"
 
