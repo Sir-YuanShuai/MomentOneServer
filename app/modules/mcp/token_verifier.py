@@ -28,6 +28,7 @@ from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import BindingStatus
 from app.modules.mcp.scope import parse_scopes
+from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 
 # Casdoor OIDC token 的 scope 是 OIDC scope（openid/profile/email），
 # 与 Moment One 的 moments.* scope 不同；Casdoor token 不携带 moments.* 时，
@@ -109,7 +110,13 @@ class MomentTokenVerifier:
         client_id = payload.get("client_id")
 
         if grant == "authorization_code":
-            # MCP OAuth token：无绑定关系
+            # MCP OAuth token：校验授权关系仍 active（Web 端撤销后立即失效）
+            async with self._make_session() as session:
+                repo = McpAuthorizationRepository(session)
+                authorization = await repo.get_by_user_and_client(user_id, client_id or "")
+                if authorization is None or authorization.status != "active":
+                    return None
+                await repo.touch_active(user_id=user_id, client_id=client_id or "")
             return AccessToken(
                 token=token,
                 client_id=client_id or "mcp-oauth",

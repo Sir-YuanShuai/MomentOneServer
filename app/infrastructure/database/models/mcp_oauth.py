@@ -67,3 +67,33 @@ class McpOAuthCode(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class McpAuthorization(Base):
+    """MCP 客户端授权关系（Web 端可管理：调整 scope / 撤销）。
+
+    一次 OAuth 授权（callback 完成）创建/更新一条记录；撤销后该用户
+    该客户端的 token 立即失效（验证时检查 status）。
+    """
+
+    __tablename__ = "mcp_authorizations"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    client_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scope: Mapped[str] = mapped_column(String(512), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
