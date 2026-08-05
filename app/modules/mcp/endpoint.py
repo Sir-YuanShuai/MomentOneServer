@@ -18,6 +18,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
@@ -58,6 +59,10 @@ class McpComponent:
         apps_html = _load_apps_html(settings)
 
         base = (settings.mcp_base_url or "http://127.0.0.1:8000").rstrip("/")
+        # host 参数：SDK 用它决定是否启用默认 DNS rebinding 保护（仅 localhost 触发）。
+        # 线上必须传真实域名（host=moment-one-api.yuanshuai.fun），否则带 token 的
+        # 请求被 421 Invalid Host header 拒绝；本地默认 127.0.0.1 保护照常。
+        host = urlparse(base).hostname or "127.0.0.1"
         self.server = build_mcp_server(
             env=self.env,
             apps_html=apps_html,
@@ -72,6 +77,7 @@ class McpComponent:
         self.asgi_app = self.server.streamable_http_app(
             streamable_http_path="/mcp",
             json_response=True,
+            host=host,
         )
 
     @asynccontextmanager
