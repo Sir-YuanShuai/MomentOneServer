@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Float, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +49,7 @@ class Moment(Base):
     location_source: Mapped[str | None] = mapped_column(String(20))
     emotion_label: Mapped[str | None] = mapped_column(String(50))
     emotion_score: Mapped[float | None] = mapped_column(Float)
+    provenance: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

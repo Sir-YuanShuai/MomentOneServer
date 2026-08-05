@@ -8,20 +8,18 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_authenticated_user_id
 from app.core.config import Settings, get_settings
-from app.core.errors import ApplicationError
 from app.infrastructure.database.repositories.device_repository import (
     SqlBindingCodeRepository,
     SqlDeviceBindingRepository,
     SqlDeviceRepository,
 )
-from app.infrastructure.database.repositories.user_repository import resolve_user_id
 from app.infrastructure.database.session import get_db_session
-from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import DeviceBinding
 from app.modules.devices.service import DeviceBindingService
@@ -32,24 +30,15 @@ QR_PAYLOAD_SCHEME = "momentone"
 QR_PAYLOAD_HOST = "bind"
 
 
-def _get_verifier(settings: Settings = Depends(get_settings)) -> CasdoorTokenVerifier:
-    return CasdoorTokenVerifier(settings)
-
-
 async def _get_user_id(
-    settings: Settings = Depends(get_settings),
-    verifier: CasdoorTokenVerifier = Depends(_get_verifier),
-    session: AsyncSession = Depends(get_db_session),
-    authorization: str | None = Header(default=None),
+    user_id: UUID = Depends(get_authenticated_user_id),
 ) -> UUID:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise ApplicationError(
-            code="AUTH_REQUIRED",
-            message="请先登录。",
-            status_code=401,
-        )
-    token = authorization.removeprefix("Bearer ").strip()
-    return await resolve_user_id(session, verifier, token)
+    """鉴权依赖：支持 Casdoor OIDC 和眼镜端 JWT 双通道。
+
+    设备管理接口理论上仅 Web 端使用（Casdoor），但接受眼镜端 JWT
+    可让眼镜端查询自身绑定状态，不破坏安全模型。
+    """
+    return user_id
 
 
 def _get_jwt_issuer(settings: Settings = Depends(get_settings)) -> JwtIssuer:
