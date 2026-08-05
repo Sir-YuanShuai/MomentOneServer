@@ -317,9 +317,26 @@ class MomentOAuthService:
         *,
         code: str,
         state: str,
+        error: str | None = None,
     ) -> str:
-        """处理 Casdoor 回调：换 token → 识别用户 → 签发我方授权码 → 返回客户端跳转 URL。"""
+        """处理 Casdoor 回调：换 token → 识别用户 → 签发我方授权码 → 返回客户端跳转 URL。
+
+        Casdoor 拒绝（error）时：若有对应事务，302 回客户端 redirect_uri 带 error
+        （RFC 6749 §4.1.2.1），否则抛 OAUTH_DENIED。
+        """
         txn = await self._codes.get_by_code(state)
+
+        if error:
+            if txn is not None and txn.redirect_uri:
+                sep = "&" if "?" in txn.redirect_uri else "?"
+                return f"{txn.redirect_uri}{sep}error={error}"
+            raise ApplicationError(
+                code="OAUTH_DENIED",
+                message=f"用户在 Casdoor 拒绝了授权：{error}",
+                status_code=400,
+                details={"error": error},
+            )
+
         if (
             txn is None
             or txn.kind != CODE_KIND_CASDOOR_TXN

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,11 +91,11 @@ async def authorize(
     code_challenge: str | None = None,
     code_challenge_method: str | None = None,
     resource: str | None = None,  # RFC 8707，忽略但接受（MCP Host 会带）
-) -> dict:
-    """授权端点：校验客户端 + PKCE → 302 跳转 Casdoor 登录页。
+) -> RedirectResponse:
+    """授权端点：校验客户端 + PKCE → 302 跳转 Casdoor 登录页（RFC 6749 §4.1.1）。
 
-    返回 302 跳转（FastAPI 路由层通过 RedirectResponse 处理），
-    这里返回 {redirect_to} 由路由包装。
+    MCP Host（ChatGPT / Claude）严格遵循标准：authorize 必须返回 302，
+    不能返回 JSON（否则 Host 无法继续流程）。
     """
     if response_type != "code":
         raise ApplicationError(
@@ -110,7 +111,7 @@ async def authorize(
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
     )
-    return {"redirect_to": url}
+    return RedirectResponse(url, status_code=302)
 
 
 @router.get("/callback")
@@ -120,15 +121,11 @@ async def casdoor_callback(
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
-) -> dict:
-    """Casdoor 登录回调：换 token → 识别用户 → 签发我方授权码 → 302 回客户端。"""
+) -> RedirectResponse:
+    """Casdoor 登录回调：换 token → 识别用户 → 签发我方授权码 → 302 回客户端（RFC 6749 §4.1.2）。"""
     if error:
-        raise ApplicationError(
-            code="OAUTH_DENIED",
-            message=f"用户在 Casdoor 拒绝了授权：{error}",
-            status_code=400,
-            details={"error": error, "errorDescription": error_description},
-        )
+        url = await service.handle_casdoor_callback(code=code or "", state=state or "", error=error)
+        return RedirectResponse(url, status_code=302)
     if not code or not state:
         raise ApplicationError(
             code="INVALID_REQUEST",
@@ -136,7 +133,7 @@ async def casdoor_callback(
             status_code=400,
         )
     url = await service.handle_casdoor_callback(code=code, state=state)
-    return {"redirect_to": url}
+    return RedirectResponse(url, status_code=302)
 
 
 __all__ = ["router"]

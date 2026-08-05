@@ -9,7 +9,7 @@
 """
 
 import jwt
-from fastapi import APIRouter, Depends, Form
+from fastapi import APIRouter, Depends, Form, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,9 +92,19 @@ async def token(
     code_verifier: str | None = Form(default=None),
     redirect_uri: str | None = Form(default=None),
     client_id: str | None = Form(default=None),
+    authorization: str | None = Header(default=None),
     service: DeviceBindingService = Depends(_make_service),
     mcp_oauth: MomentOAuthService = Depends(_make_mcp_oauth_service),
 ) -> TokenResponse:
+    # 兼容 HTTP Basic 客户端认证（client_id[:client_secret]；ChatGPT/Claude 常用）
+    if not client_id and authorization and authorization.lower().startswith("basic "):
+        import base64
+
+        try:
+            decoded = base64.b64decode(authorization.removeprefix("Basic ").strip()).decode("utf-8")
+            client_id = decoded.split(":", 1)[0] or None
+        except Exception:
+            client_id = None
     if grant_type == QR_BINDING_GRANT_TYPE:
         if not binding_code or not device_id:
             raise ApplicationError(
