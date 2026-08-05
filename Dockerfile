@@ -10,6 +10,7 @@ RUN useradd --create-home --uid 10001 appuser
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY contracts ./contracts
 COPY migrations ./migrations
 COPY alembic.ini ./alembic.ini
 RUN python -m pip install --upgrade pip && python -m pip install .

@@ -94,6 +94,14 @@ jobs:
           docker logs moment-one-server
           exit 1
 
+      - name: Smoke-test record-type registry (contracts inside image)
+        run: >-
+          docker exec moment-one-server python -c
+          "from app.modules.moment_types.registry import get_schema;
+          assert get_schema('bookkeeping')['title'];
+          assert get_schema('habit')['title'];
+          print('registry schemas OK')"
+
       - name: Print container logs on failure
         if: failure()
         run: docker logs moment-one-server || true
