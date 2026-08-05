@@ -106,6 +106,9 @@ class PostgresMomentRepository:
         category: str | None = None,
         tag: str | None = None,
         goal_id: UUID | None = None,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+        payload_eq: dict[str, str] | None = None,
     ) -> tuple[list[Moment], bool, str | None]:
         stmt = (
             select(MomentORM)
@@ -127,6 +130,13 @@ class PostgresMomentRepository:
             stmt = stmt.where(MomentORM.tags.contains([tag]))
         if goal_id:
             stmt = stmt.where(MomentORM.payload["goalId"].astext == str(goal_id))
+        if occurred_from:
+            stmt = stmt.where(MomentORM.occurred_at >= occurred_from)
+        if occurred_to:
+            stmt = stmt.where(MomentORM.occurred_at <= occurred_to)
+        if payload_eq:
+            for key, value in payload_eq.items():
+                stmt = stmt.where(MomentORM.payload[key].astext == value)
 
         if cursor:
             # cursor 是上一页最后一条的 occurred_at + id 的组合
@@ -161,6 +171,41 @@ class PostgresMomentRepository:
             next_cursor = f"{last.occurred_at.isoformat()}|{last.id}"
 
         return moments, has_more, next_cursor
+
+    async def list_by_user_range(
+        self,
+        user_id: UUID,
+        *,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+        moment_type: str | None = None,
+        payload_eq: dict[str, str] | None = None,
+    ) -> list[Moment]:
+        """区间全量查询（无分页），供服务端聚合（如 bookkeeping_summary）。
+
+        仅用于个人数据量级（单用户周期内账单数有限）；输出仍受工具层限制。
+        """
+        stmt = (
+            select(MomentORM)
+            .where(
+                and_(
+                    MomentORM.user_id == user_id,
+                    MomentORM.deleted_at.is_(None),
+                )
+            )
+            .order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc())
+        )
+        if moment_type:
+            stmt = stmt.where(MomentORM.moment_type == moment_type)
+        if occurred_from:
+            stmt = stmt.where(MomentORM.occurred_at >= occurred_from)
+        if occurred_to:
+            stmt = stmt.where(MomentORM.occurred_at <= occurred_to)
+        if payload_eq:
+            for key, value in payload_eq.items():
+                stmt = stmt.where(MomentORM.payload[key].astext == value)
+        result = await self._session.execute(stmt)
+        return [_orm_to_domain(r) for r in result.scalars().all()]
 
     async def get_by_id(self, moment_id: UUID, user_id: UUID) -> Moment | None:
         stmt = select(MomentORM).where(

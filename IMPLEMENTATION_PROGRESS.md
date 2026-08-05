@@ -1,6 +1,6 @@
 # MomentOneServer — 实现进度
 
-> 文档状态：Current  |  更新日期：2026-08-04
+> 文档状态：Current  |  更新日期：2026-08-05
 >
 > 本文件记录**当前已实现的代码、表和 API**，是高频更新的"现状快照"。
 > 目标设计见 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md)，
@@ -10,7 +10,7 @@
 
 Phase 0-1：基础 Moment CRUD + Casdoor 认证 + PostgreSQL 持久化。
 Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼镜端鉴权）。
-详见 [docs/domain/DEVICE_BINDING.md](./docs/domain/DEVICE_BINDING.md)。
+**Phase MCP：MCP Server（Streamable HTTP + Bearer 鉴权）+ MCP OAuth 代理 + 记账工具 + MCP Apps UI（第一版，见 [docs/roadmap/MCP_APPS_PLAN.md](../docs/roadmap/MCP_APPS_PLAN.md)）。**
 
 ## 已实现的表
 
@@ -124,7 +124,13 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET | `/v1/device/bindings` | 已实现 | 列出当前用户已绑定设备 |
 | DELETE | `/v1/device/bindings/{id}` | 已实现 | 撤销绑定（吊销 token） |
 | PATCH | `/v1/device/bindings/{id}` | 已实现 | 调整 scope |
-| POST | `/oauth/token` | 已实现 | OAuth 2.1 Token 端点（眼镜端，无 Casdoor 鉴权） |
+| POST | `/oauth/token` | 已实现 | OAuth 2.1 Token 端点（QR Binding / glasses refresh / MCP authorization_code + PKCE / MCP refresh） |
+| GET | `/oauth/authorize` | 已实现 | MCP OAuth 授权端点（PKCE 校验 → 302 跳转 Casdoor 登录） |
+| GET | `/oauth/callback` | 已实现 | Casdoor 回调 → 换 Casdoor token → 签发我方 RS256 token 的授权码 → 302 回客户端 |
+| POST | `/oauth/register` | 已实现 | MCP OAuth 动态客户端注册（RFC 7591） |
+| GET | `/.well-known/oauth-protected-resource` | 已实现 | RFC 9728（根路径 + `/mcp` 子路径） |
+| GET | `/.well-known/oauth-authorization-server` | 已实现 | RFC 8414（根路径 + `/mcp` 子路径） |
+| POST | `/mcp` | 已实现 | MCP Streamable HTTP 端点（官方 Python `mcp` SDK，Bearer 鉴权，401 带 WWW-Authenticate） |
 | POST | `/v1/habit-goals` | 已实现 | 创建习惯目标（ADR-0018） |
 | GET | `/v1/habit-goals` | 已实现 | 习惯目标列表 |
 | GET | `/v1/habit-goals/{id}` | 已实现 | 习惯目标详情 |
@@ -147,6 +153,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | `0009_create_habit_goals` | 创建 habit_goals 表（习惯目标实体，ADR-0018） |
 | `0010_add_persons_and_event` | moments 表新增 persons / event_name 两列（通用描述维度，ADR-0019） |
 | `0011_add_frequency_and_color_to_habit_goals` | habit_goals 表新增 frequency / times_per_week / color 列（对标习惯打卡 App，ADR-0020） |
+| `0012_create_mcp_oauth_tables` | 创建 mcp_oauth_clients / mcp_oauth_codes 表（MCP OAuth DCR 客户端 + 授权码/事务状态） |
 
 ## 已实现的模块
 
@@ -158,6 +165,9 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
+| MCP Server | `app/modules/mcp/`（server/tools/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（第一版：bookkeeping_create/list/summary + moments_get；ui://moment-one/bookkeeping） |
+| MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
+| MCP Apps UI | `mcp_apps/bookkeeping/`（vite 单文件构建 → dist/bookkeeping.html，`@modelcontextprotocol/ext-apps` app-bridge） | 已实现（记账列表 + 收支/分类统计；结构化渲染 + 文本降级） |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
 | Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 媒体关联） |

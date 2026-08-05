@@ -90,6 +90,60 @@ class JwtIssuer:
         }
         return jwt.encode(payload, private_key, algorithm="RS256")
 
+    def issue_mcp_access_token(
+        self,
+        *,
+        user_id: UUID,
+        scope: tuple[str, ...],
+        client_id: str,
+    ) -> tuple[str, int]:
+        """签发 MCP OAuth access_token（Authorization Code + PKCE 路径）。
+
+        与眼镜端 token 同一套 RS256 签名/验签，但无 binding_id：
+        - claims 增加 `grant=authorization_code` + `client_id`
+        - 验签方（deps.get_auth_context）按 grant 区分眼镜端与 MCP OAuth token
+        """
+        private_key, _ = self._ensure_keys()
+        now = datetime.now(UTC)
+        expires_in = self._settings.access_token_ttl_seconds
+        payload = {
+            "iss": self._settings.jwt_issuer,
+            "sub": str(user_id),
+            "aud": self._settings.jwt_audience,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
+            "scope": " ".join(scope),
+            "token_type": "access",
+            "grant": "authorization_code",
+            "client_id": client_id,
+        }
+        token = jwt.encode(payload, private_key, algorithm="RS256")
+        return token, expires_in
+
+    def issue_mcp_refresh_token(
+        self,
+        *,
+        user_id: UUID,
+        scope: tuple[str, ...],
+        client_id: str,
+    ) -> str:
+        """签发 MCP OAuth refresh_token（不滚动，与眼镜端 refresh_token 一致：30 天硬上限）。"""
+        private_key, _ = self._ensure_keys()
+        now = datetime.now(UTC)
+        expires_in = self._settings.refresh_token_ttl_seconds
+        payload = {
+            "iss": self._settings.jwt_issuer,
+            "sub": str(user_id),
+            "aud": self._settings.jwt_audience,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
+            "scope": " ".join(scope),
+            "token_type": "refresh",
+            "grant": "authorization_code",
+            "client_id": client_id,
+        }
+        return jwt.encode(payload, private_key, algorithm="RS256")
+
     def verify_refresh_token(self, token: str) -> dict:
         """验签 refresh_token，返回 payload。失败抛 ApplicationError。"""
         _, public_key = self._ensure_keys()

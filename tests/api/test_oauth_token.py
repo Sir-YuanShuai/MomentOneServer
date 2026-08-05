@@ -154,7 +154,21 @@ def app(tmp_path: Path, fake_service: FakeService) -> FastAPI:
     settings = _make_settings(tmp_path)
     app = create_application(settings)
     app.dependency_overrides[oauth_routes._make_service] = lambda: fake_service  # pyright: ignore[reportPrivateUsage]
+    # MCP OAuth grant 测试在 test_mcp_oauth.py 覆盖；此处提供空实现避免解析 DB 依赖
+    app.dependency_overrides[
+        oauth_routes._make_mcp_oauth_service  # pyright: ignore[reportPrivateUsage]
+    ] = lambda: _FakeMcpOAuthService()
     return app
+
+
+class _FakeMcpOAuthService:
+    """仅占位：QR binding / glasses refresh 测试不触发 MCP grant。"""
+
+    async def exchange_auth_code(self, **kwargs: object) -> object:
+        raise AssertionError("authorization_code grant 应由 test_mcp_oauth 覆盖")
+
+    async def refresh_mcp_token(self, refresh_token: str) -> object:
+        raise AssertionError("MCP refresh 应由 test_mcp_oauth 覆盖")
 
 
 @pytest.mark.asyncio
