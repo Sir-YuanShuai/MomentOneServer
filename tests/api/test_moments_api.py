@@ -26,6 +26,13 @@ from app.infrastructure.database.repositories.confirmation_repository import (
 from app.infrastructure.database.repositories.idempotency_repository import (
     IdempotencyRecord,
 )
+from app.modules.assets.domain import Asset as AssetDomain
+from app.modules.assets.domain import (
+    AssetKind,
+    AssetState,
+    MomentAssetLink,
+    build_storage_key,
+)
 from app.modules.moments.domain import (
     Moment,
 )
@@ -332,6 +339,113 @@ class FakeAuditRepository:
         self.calls.append({"event_type": event_type, "allowed": allowed})
 
 
+class FakeAssetRepository:
+    """内存态 Asset Repository。"""
+
+    def __init__(self) -> None:
+        self._store: dict[UUID, Any] = {}
+
+    async def create(
+        self, *, user_id: UUID, kind: Any, content_type: str, size_bytes: int | None = None
+    ) -> Any:
+        asset_id = uuid4()
+        self._store[asset_id] = AssetDomain(
+            id=asset_id,
+            user_id=user_id,
+            state=AssetState.UPLOADING,
+            kind=AssetKind(kind) if isinstance(kind, str) else kind,
+            storage_key=build_storage_key(user_id, asset_id),
+            content_type=content_type,
+            size_bytes=size_bytes,
+            checksum_sha256=None,
+            created_at=datetime.now(UTC),
+            ready_at=None,
+            deleted_at=None,
+        )
+        return self._store[asset_id]
+
+    async def get_by_id(self, asset_id: UUID, user_id: UUID) -> Any | None:
+        a = self._store.get(asset_id)
+        if a is None or a.user_id != user_id or a.deleted_at is not None:
+            return None
+        return a
+
+    async def mark_ready(
+        self, asset_id: UUID, user_id: UUID, *, size_bytes: int, checksum_sha256: str | None = None
+    ) -> Any | None:
+        a = self._store.get(asset_id)
+        if a is None or a.user_id != user_id:
+            return None
+        self._store[asset_id] = AssetDomain(
+            id=a.id,
+            user_id=a.user_id,
+            state=AssetState.READY,
+            kind=a.kind,
+            storage_key=a.storage_key,
+            content_type=a.content_type,
+            size_bytes=size_bytes,
+            checksum_sha256=checksum_sha256,
+            created_at=a.created_at,
+            ready_at=datetime.now(UTC),
+            deleted_at=None,
+        )
+        return self._store[asset_id]
+
+    async def mark_failed(self, asset_id: UUID, user_id: UUID) -> Any | None:
+        a = self._store.get(asset_id)
+        if a is None or a.user_id != user_id:
+            return None
+        self._store[asset_id] = AssetDomain(
+            id=a.id,
+            user_id=a.user_id,
+            state=AssetState.FAILED,
+            kind=a.kind,
+            storage_key=a.storage_key,
+            content_type=a.content_type,
+            size_bytes=a.size_bytes,
+            checksum_sha256=a.checksum_sha256,
+            created_at=a.created_at,
+            ready_at=None,
+            deleted_at=None,
+        )
+        return self._store[asset_id]
+
+
+class FakeMomentAssetRepository:
+    """内存态 MomentAsset 关联 Repository。"""
+
+    def __init__(self) -> None:
+        self._links: list[Any] = []
+
+    async def attach(
+        self, *, user_id: UUID, moment_id: UUID, asset_id: UUID, position: int, role: Any = None
+    ) -> Any:
+        link = MomentAssetLink(
+            user_id=user_id,
+            moment_id=moment_id,
+            asset_id=asset_id,
+            position=position,
+            role=role,
+            created_at=datetime.now(UTC),
+        )
+        self._links.append(link)
+        return link
+
+    async def list_by_moment(self, moment_id: UUID, user_id: UUID) -> list[Any]:
+        return [
+            link for link in self._links if link.moment_id == moment_id and link.user_id == user_id
+        ]
+
+    async def detach_all(self, moment_id: UUID, user_id: UUID) -> int:
+        before = len(self._links)
+        self._links = [
+            link
+            for link in self._links
+            if not (link.moment_id == moment_id and link.user_id == user_id)
+        ]
+        return before - len(self._links)
+
+
 class FakeSession:
     """空 AsyncSession，repositories 不实际使用 session。"""
 
@@ -353,6 +467,8 @@ def fake_repos() -> dict[str, Any]:
         "idempotency": FakeIdempotencyRepository(),
         "revision": FakeRevisionRepository(),
         "audit": FakeAuditRepository(),
+        "asset": FakeAssetRepository(),
+        "moment_asset": FakeMomentAssetRepository(),
     }
 
 
@@ -370,22 +486,31 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     async def _fake_session() -> FakeSession:
         return FakeSession()
 
+    async def _fake_storage() -> None:
+        # 测试环境不接 S3，media 字段省略 downloadUrl/thumbnailUrl
+        return None
+
     # 替换路由内引用的 repository 类
     original_moment_repo = moments_routes.PostgresMomentRepository
     original_confirmation_repo = moments_routes.SqlConfirmationRepository
     original_idem_repo = moments_routes.SqlIdempotencyRepository
     original_revision_repo = moments_routes.SqlMomentRevisionRepository
     original_audit_repo = moments_routes.SqlAuditEventRepository
+    original_asset_repo = moments_routes.AssetRepository
+    original_moment_asset_repo = moments_routes.MomentAssetRepository
 
     moments_routes.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     moments_routes.SqlConfirmationRepository = lambda session: fake_repos["confirmation"]  # type: ignore[assignment]
     moments_routes.SqlIdempotencyRepository = lambda session: fake_repos["idempotency"]  # type: ignore[assignment]
     moments_routes.SqlMomentRevisionRepository = lambda session: fake_repos["revision"]  # type: ignore[assignment]
     moments_routes.SqlAuditEventRepository = lambda session: fake_repos["audit"]  # type: ignore[assignment]
+    moments_routes.AssetRepository = lambda session: fake_repos["asset"]  # type: ignore[assignment]
+    moments_routes.MomentAssetRepository = lambda session: fake_repos["moment_asset"]  # type: ignore[assignment]
 
     application.dependency_overrides[deps_module.get_auth_context] = _fake_auth_context
     application.dependency_overrides[deps_module.get_authenticated_user_id] = _fake_user_id
     application.dependency_overrides[deps_module.get_db_session] = _fake_session
+    application.dependency_overrides[moments_routes.get_storage] = _fake_storage
 
     yield application
 
@@ -395,6 +520,8 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     moments_routes.SqlIdempotencyRepository = original_idem_repo  # type: ignore[assignment]
     moments_routes.SqlMomentRevisionRepository = original_revision_repo  # type: ignore[assignment]
     moments_routes.SqlAuditEventRepository = original_audit_repo  # type: ignore[assignment]
+    moments_routes.AssetRepository = original_asset_repo  # type: ignore[assignment]
+    moments_routes.MomentAssetRepository = original_moment_asset_repo  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio
