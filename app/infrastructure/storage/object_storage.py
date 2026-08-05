@@ -97,11 +97,15 @@ class S3ObjectStorage:
         expires_in_seconds: int,
     ) -> UploadIntent:
         key = build_storage_key(UUID(user_id), UUID(asset_id))
-        url = self._client.generate_presigned_put_object(
-            Bucket=self._bucket,
-            Key=key,
+        url = self._client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": self._bucket,
+                "Key": key,
+                "ContentType": content_type,
+            },
             ExpiresIn=expires_in_seconds,
-            ContentType=content_type,
+            HttpMethod="PUT",
         )
         # 客户端 PUT 时必须携带的 header（与签发时一致）
         headers = {
@@ -132,10 +136,11 @@ class S3ObjectStorage:
         expires_in_seconds: int,
     ) -> str:
         key = build_storage_key(UUID(user_id), UUID(asset_id))
-        return self._client.generate_presigned_get_object(
-            Bucket=self._bucket,
-            Key=key,
+        return self._client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=expires_in_seconds,
+            HttpMethod="GET",
         )
 
 
