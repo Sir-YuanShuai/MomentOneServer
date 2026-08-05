@@ -109,11 +109,15 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 |---|---|---|---|
 | GET | `/v1/system/health` | 已实现 | 健康检查 |
 | GET | `/v1/system/version` | 已实现 | 版本信息 |
-| POST | `/v1/moments` | 已实现 | 创建 Moment |
-| GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页） |
-| GET | `/v1/moments/{id}` | 已实现 | 详情 |
+| POST | `/v1/moments` | 已实现 | 创建 Moment（支持 assetIds 关联媒体） |
+| GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页，响应含 media 数组） |
+| GET | `/v1/moments/{id}` | 已实现 | 详情（含 media 数组 + downloadUrl） |
 | PATCH | `/v1/moments/{id}` | 已实现 | 修改（乐观锁） |
 | DELETE | `/v1/moments/{id}` | 已实现 | 软删除（两阶段确认） |
+| POST | `/v1/assets/upload-intents` | 已实现 | 创建 Asset + 返回 Presigned PUT URL |
+| POST | `/v1/assets/{assetId}/complete` | 已实现 | head_object 校验 + 状态机 ready |
+| GET | `/v1/assets/{assetId}` | 已实现 | Asset 元数据查询 |
+| POST | `/v1/assets/{assetId}/download-url` | 已实现 | 短期 GET Presigned URL（仅 READY） |
 | POST | `/v1/device/bindings` | 已实现 | 创建绑定会话（Web 端，Casdoor Bearer） |
 | GET | `/v1/device/bindings` | 已实现 | 列出当前用户已绑定设备 |
 | DELETE | `/v1/device/bindings/{id}` | 已实现 | 撤销绑定（吊销 token） |
@@ -141,7 +145,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Search | `app/modules/search/` | 骨架 |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
-| Media | `app/modules/media/` | 骨架 |
+| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 媒体关联） |
 
 ## 未实现的目标表
 
@@ -150,7 +154,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | 阶段 | 表 | 状态 |
 |---|---|---|
 | Phase 1 | `user_identities`, `moment_revisions`, `idempotency_keys`, `audit_events` | 已实现（表 + ORM + repository；moments 路由已接入 revisions + audit） |
-| Phase 2 | `assets`, `moment_assets`, `user_configs` | 待实现（`devices` / `device_bindings` 已实现） |
+| Phase 2 | `assets`, `moment_assets`, `user_configs` | `assets` + `moment_assets` 已实现（迁移 0007 + ORM + repository + API）；`user_configs` 待实现 |
 | Phase 3 | `pending_confirmations` | 已实现（替代内存态） |
 | Phase 4+ | `sync_cursors`, `sync_change_log`, `oauth_clients`, `access_grants`, `agent_connections`, `ai_artifacts`, `search_embeddings` | 待实现 |
 
@@ -166,3 +170,5 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Binding Code Generator 单元测试 | `tests/unit/test_binding_code_generator.py` | 已实现 |
 | DeviceBindingService 单元测试 | `tests/unit/test_device_binding_service.py` | 已实现 |
 | OAuth Token API 测试 | `tests/api/test_oauth_token.py` | 已实现 |
+| Moments API 测试 | `tests/api/test_moments_api.py` | 已实现（含 assetIds 关联 + media 响应） |
+| Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 媒体集成） |

@@ -7,7 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthContext, get_auth_context, get_authenticated_user_id
+from app.core.config import Settings, get_settings
 from app.core.errors import ApplicationError
+from app.infrastructure.database.repositories.asset_repository import (
+    AssetRepository,
+    MomentAssetRepository,
+)
 from app.infrastructure.database.repositories.audit_event_repository import (
     SqlAuditEventRepository,
 )
@@ -25,6 +30,12 @@ from app.infrastructure.database.repositories.moment_revision_repository import 
     SqlMomentRevisionRepository,
 )
 from app.infrastructure.database.session import get_db_session
+from app.infrastructure.storage.object_storage import (
+    ObjectStorage,
+    ObjectStorageNotConfigured,
+    get_object_storage,
+)
+from app.modules.assets.domain import AssetRole, AssetState
 from app.modules.moments.domain import (
     LocationSource,
     Moment,
@@ -88,8 +99,60 @@ def _parse_emotion(data: dict | None) -> MomentEmotion | None:
     )
 
 
-def _to_dict(moment: Moment) -> dict:
-    return {
+def get_storage(
+    settings: Settings = Depends(get_settings),
+) -> ObjectStorage | None:
+    """对象存储依赖；未配置时返回 None（media 字段省略 downloadUrl/thumbnailUrl）。"""
+    try:
+        return get_object_storage(settings)
+    except ObjectStorageNotConfigured:
+        return None
+
+
+async def _build_media(
+    moment_id: UUID,
+    user_id: UUID,
+    session: AsyncSession,
+    storage: ObjectStorage | None,
+    settings: Settings,
+    *,
+    include_download_url: bool = True,
+) -> list[dict]:
+    """读取 moment_assets + assets，组装 media 响应。
+
+    - 列表场景：include_download_url=False，只返回 thumbnailUrl（本期不做缩略图，留 null）
+    - 详情场景：include_download_url=True，返回 downloadUrl + thumbnailUrl
+    - storage 未配置时省略所有 URL 字段
+    """
+    link_repo = MomentAssetRepository(session)
+    asset_repo = AssetRepository(session)
+    links = await link_repo.list_by_moment(moment_id, user_id)
+
+    media: list[dict] = []
+    for link in links:
+        asset = await asset_repo.get_by_id(link.asset_id, user_id)
+        if asset is None or asset.state != AssetState.READY:
+            continue
+        entry: dict = {
+            "assetId": str(asset.id),
+            "type": asset.content_type,
+            "thumbnailUrl": None,  # 本期不做缩略图
+        }
+        if include_download_url and storage is not None:
+            url = storage.create_download_url(
+                user_id=str(user_id),
+                asset_id=str(asset.id),
+                expires_in_seconds=settings.s3_download_url_ttl_seconds,
+            )
+            expires_at = datetime.now(UTC) + timedelta(seconds=settings.s3_download_url_ttl_seconds)
+            entry["downloadUrl"] = url
+            entry["expiresAt"] = expires_at.isoformat()
+        media.append(entry)
+    return media
+
+
+def _to_dict(moment: Moment, media: list[dict] | None = None) -> dict:
+    d: dict = {
         "id": str(moment.id),
         "userId": str(moment.user_id),
         "title": moment.title,
@@ -125,6 +188,9 @@ def _to_dict(moment: Moment) -> dict:
         "updatedAt": moment.updated_at.isoformat(),
         "deletedAt": moment.deleted_at.isoformat() if moment.deleted_at else None,
     }
+    if media is not None:
+        d["media"] = media
+    return d
 
 
 class CreateMomentRequest(BaseModel):
@@ -139,6 +205,9 @@ class CreateMomentRequest(BaseModel):
     location: dict | None = None
     emotion: dict | None = None
     provenance: dict | None = None  # 客户端可显式声明，否则服务端按 AuthContext 推断
+    assetIds: list[str] = Field(
+        default_factory=list, description="已上传完成的 Asset ID 列表，按顺序关联"
+    )
 
 
 class UpdateMomentRequest(BaseModel):
@@ -172,6 +241,8 @@ class CursorPageResponse(BaseModel):
 async def list_moments(
     user_id: UUID = Depends(_get_user_id),
     session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage | None = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: str | None = Query(default=None),
 ) -> CursorPageResponse:
@@ -181,8 +252,14 @@ async def list_moments(
         limit=limit,
         cursor=cursor,
     )
+    items = []
+    for m in moments:
+        media = await _build_media(
+            m.id, user_id, session, storage, settings, include_download_url=False
+        )
+        items.append(_to_dict(m, media=media))
     return CursorPageResponse(
-        items=[_to_dict(m) for m in moments],
+        items=items,
         nextCursor=next_cursor,
         hasMore=has_more,
     )
@@ -193,6 +270,8 @@ async def create_moment(
     body: CreateMomentRequest,
     ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage | None = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     # 幂等去重：客户端传 Idempotency-Key 时启用
@@ -243,7 +322,47 @@ async def create_moment(
 
     repo = PostgresMomentRepository(session)
     created = await repo.create(moment)
-    response = _to_dict(created)
+
+    # 关联 Asset（如有）：校验每个 assetId 属于当前用户且 state=ready
+    media: list[dict] = []
+    if body.assetIds:
+        asset_repo = AssetRepository(session)
+        link_repo = MomentAssetRepository(session)
+        for position, asset_id_str in enumerate(body.assetIds):
+            try:
+                asset_uuid = UUID(asset_id_str)
+            except (ValueError, TypeError) as exc:
+                raise ApplicationError(
+                    code="INVALID_ARGUMENTS",
+                    message=f"assetId 格式无效：{asset_id_str}",
+                    status_code=400,
+                ) from exc
+            asset = await asset_repo.get_by_id(asset_uuid, ctx.user_id)
+            if asset is None:
+                raise ApplicationError(
+                    code="ASSET_NOT_FOUND",
+                    message="未找到该 Asset 或无权访问。",
+                    status_code=404,
+                )
+            if asset.state != AssetState.READY:
+                raise ApplicationError(
+                    code="MEDIA_NOT_READY",
+                    message=f"Asset {asset_id_str} 尚未就绪，不能关联到 Moment。",
+                    status_code=409,
+                )
+            await link_repo.attach(
+                user_id=ctx.user_id,
+                moment_id=created.id,
+                asset_id=asset.id,
+                position=position,
+                role=AssetRole.ORIGINAL,
+            )
+
+    # 组装 media 响应（详情含 downloadUrl）
+    media = await _build_media(
+        created.id, ctx.user_id, session, storage, settings, include_download_url=True
+    )
+    response = _to_dict(created, media=media)
 
     # 记录版本快照
     revision_repo = SqlMomentRevisionRepository(session)
@@ -285,6 +404,8 @@ async def get_moment(
     moment_id: str,
     user_id: UUID = Depends(_get_user_id),
     session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage | None = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     repo = PostgresMomentRepository(session)
     moment = await repo.get_by_id(UUID(moment_id), user_id)
@@ -294,7 +415,10 @@ async def get_moment(
             message="未找到该 Moment。",
             status_code=404,
         )
-    return _to_dict(moment)
+    media = await _build_media(
+        moment.id, user_id, session, storage, settings, include_download_url=True
+    )
+    return _to_dict(moment, media=media)
 
 
 @router.patch("/{moment_id}", response_model=dict)

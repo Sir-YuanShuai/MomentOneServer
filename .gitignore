@@ -34,3 +34,6 @@ dist/
 # Runtime
 logs/
 *.log
+
+# Test-generated keys
+*.pem
