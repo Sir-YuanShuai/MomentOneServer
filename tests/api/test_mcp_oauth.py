@@ -303,8 +303,8 @@ async def test_oauth_authorize_redirects_to_casdoor(app: FastAPI) -> None:
                 "code_challenge_method": "S256",
             },
         )
-    assert resp.status_code == 200
-    url = resp.json()["redirect_to"]
+    assert resp.status_code == 302, resp.text
+    url = resp.headers["location"]
     parsed = urlparse(url)
     assert parsed.netloc == "account.example.fun"
     assert parsed.path == "/login/oauth/authorize"
@@ -337,7 +337,8 @@ async def test_oauth_full_flow(app: FastAPI, tmp_path: Path) -> None:
                 "code_challenge_method": "S256",
             },
         )
-        casdoor_url = urlparse(authz.json()["redirect_to"])
+        assert authz.status_code == 302
+        casdoor_url = urlparse(authz.headers["location"])
         casdoor_state = parse_qs(casdoor_url.query)["state"][0]
 
         # Casdoor 回调（带上 Casdoor 的授权码 + state）
@@ -345,8 +346,8 @@ async def test_oauth_full_flow(app: FastAPI, tmp_path: Path) -> None:
             "/oauth/callback",
             params={"code": "casdoor-auth-code", "state": casdoor_state},
         )
-        assert cb.status_code == 200
-        client_redirect = cb.json()["redirect_to"]
+        assert cb.status_code == 302
+        client_redirect = cb.headers["location"]
         assert client_redirect.startswith("http://127.0.0.1:4321/callback?code=")
         cb_qs = parse_qs(urlparse(client_redirect).query)
         auth_code = cb_qs["code"][0]
@@ -422,9 +423,10 @@ async def test_oauth_pkce_mismatch(app: FastAPI) -> None:
                 "code_challenge_method": "S256",
             },
         )
-        casdoor_state = parse_qs(urlparse(authz.json()["redirect_to"]).query)["state"][0]
+        casdoor_state = parse_qs(urlparse(authz.headers["location"]).query)["state"][0]
         cb = await client.get("/oauth/callback", params={"code": "c1", "state": casdoor_state})
-        auth_code = parse_qs(urlparse(cb.json()["redirect_to"]).query)["code"][0]
+        assert cb.status_code == 302
+        auth_code = parse_qs(urlparse(cb.headers["location"]).query)["code"][0]
 
         tok = await client.post(
             "/oauth/token",
