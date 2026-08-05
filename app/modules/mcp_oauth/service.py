@@ -41,7 +41,9 @@ GRANT_QR_BINDING = "urn:momentone:oauth:grant-type:qr-binding"
 CODE_KIND_CASDOOR_TXN = "casdoor_txn"
 CODE_KIND_AUTH_CODE = "auth_code"
 
-DEFAULT_SCOPE = "moments.read"
+# 默认 scope：对齐 Web 端 QR Binding 的默认授权（DEVICE_BINDING.md §4.1），
+# 读写都可用；moments.delete 仍需客户端显式请求（高危操作）。
+DEFAULT_SCOPE = "moments.read moments.write"
 
 
 def generate_code_verifier() -> str:
