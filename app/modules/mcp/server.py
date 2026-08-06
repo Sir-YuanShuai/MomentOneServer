@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server.apps import Apps
@@ -54,6 +55,29 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "moments_get": "按 momentId 查询单条完整 Moment（含 type/payload/provenance）。",
 }
 
+# 远程提示词：眼镜端 LanguageModel 的记账助手指令（工具与提示词均由远程提供，
+# 眼镜端只做客户端适配——动态声明工具 + 拉取本提示词，不内置记账规则）
+BOOKKEEPING_PROMPT_NAME = "bookkeeping-assistant"
+_BOOKKEEPING_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "bookkeeping_assistant.md"
+
+# 提示词文件缺失时的降级内容（正常随容器部署，不应触发）
+_BOOKKEEPING_PROMPT_FALLBACK = (
+    "你是「一刻」的记账助手。只依据 MCP 工具返回的结果回答，禁止虚构结果。"
+    "「记一笔/记账/花了/消费 xx 元」→ bookkeeping_create；"
+    "「本月/上个月/某月/今年/去年花了多少、收支、结余」→ bookkeeping_summary"
+    "（相对时间换算 year/month）；「明细/账单/某分类消费」→ bookkeeping_list。"
+    "只回传工具实际返回的内容；工具报错时说明错误码，不要假装成功。每轮最多一个工具。"
+)
+
+
+def _load_bookkeeping_prompt() -> str:
+    try:
+        if _BOOKKEEPING_PROMPT_PATH.is_file():
+            return _BOOKKEEPING_PROMPT_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return _BOOKKEEPING_PROMPT_FALLBACK
+
 
 def build_mcp_server(
     *,
@@ -92,8 +116,31 @@ def build_mcp_server(
     # 非 Apps 绑定工具在 server 构造后注册
     _register_bookkeeping_create(server, env)
     _register_moments_get(server, env)
+    _register_bookkeeping_prompt(server)
 
     return server
+
+
+# ---------------------------------------------------------------------------
+# 远程提示词：bookkeeping-assistant（眼镜端 LanguageModel 记账指令）
+# ---------------------------------------------------------------------------
+
+
+def _register_bookkeeping_prompt(server: MCPServer) -> None:
+    """注册记账助手提示词（prompts/list + prompts/get），供眼镜端拉取。"""
+
+    @server.prompt(
+        name=BOOKKEEPING_PROMPT_NAME,
+        title="记账助手",
+        description="指导模型使用记账工具：记一笔、查统计（含相对周期换算）、查明细；只回传工具实际结果。",
+    )
+    async def bookkeeping_assistant() -> list[object]:  # pyright: ignore[reportUnusedFunction]
+        return [
+            {
+                "role": "user",
+                "content": {"type": "text", "text": _load_bookkeeping_prompt()},
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------

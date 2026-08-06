@@ -1001,3 +1001,38 @@ async def test_glasses_legacy_fallback_to_binding_scope(app: FastAPI, tmp_path: 
 
     assert "error" not in created, created
     assert created["result"]["structuredContent"]["amount"] == 7.7
+
+
+@pytest.mark.asyncio
+async def test_bookkeeping_prompt_served(app: FastAPI, tmp_path: Path) -> None:
+    """远程提示词：prompts/list 可见 bookkeeping-assistant，prompts/get 返回记账指令。"""
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+        listed = await _post(
+            client,
+            session_id,
+            token,
+            {"jsonrpc": "2.0", "id": 2, "method": "prompts/list", "params": {}},
+        )
+        fetched = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "prompts/get",
+                "params": {"name": "bookkeeping-assistant"},
+            },
+        )
+
+    prompts = listed["result"]["prompts"]
+    assert any(p["name"] == "bookkeeping-assistant" for p in prompts)
+    messages = fetched["result"]["messages"]
+    text = "".join(m["content"].get("text", "") for m in messages if m.get("content"))
+    assert "bookkeeping_create" in text
+    assert "bookkeeping_summary" in text
+    assert "上个月" in text
