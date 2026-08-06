@@ -12,6 +12,9 @@ Create Date: 2026-08-06 14:00:00
   （client_id = 'glasses:{device_id}'，scope 规范化后写入）；
 - device_bindings.scope 保留为 legacy 镜像，不再作为权限事实源；
 - 存量 mcp_authorizations 的 scope 同样规范化（防御历史冒号命名）。
+
+幂等性：add_column 前检查列是否存在；回填前检查 (user_id, client_id) 是否已
+存在。全程不手动 commit（交给 alembic 事务），避免破坏版本表写入。
 """
 from collections.abc import Sequence
 from uuid import uuid4
@@ -45,18 +48,30 @@ def _normalize_scope(scope: list[str] | str | None) -> str:
     return " ".join(normalized)
 
 
+def _column_exists(bind: object, table: str, column: str) -> bool:
+    row = bind.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = :table AND column_name = :column"
+        ),
+        {"table": table, "column": column},
+    ).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
-    op.add_column(
-        "mcp_authorizations",
-        sa.Column(
-            "client_type",
-            sa.String(16),
-            nullable=False,
-            server_default="mcp",
-        ),
-    )
+    if not _column_exists(bind, "mcp_authorizations", "client_type"):
+        op.add_column(
+            "mcp_authorizations",
+            sa.Column(
+                "client_type",
+                sa.String(16),
+                nullable=False,
+                server_default="mcp",
+            ),
+        )
 
     # 1) 存量 mcp_authorizations 的 scope 规范化（防御历史冒号命名）
     rows = bind.execute(sa.text("SELECT id, scope FROM mcp_authorizations")).fetchall()
@@ -68,14 +83,13 @@ def upgrade() -> None:
                 {"scope": normalized, "id": auth_id},
             )
 
-    # 2) 存量设备绑定回填为 glasses 授权记录（scope 规范化）
+    # 2) 存量设备绑定回填为 glasses 授权记录（scope 规范化，幂等）
     bindings = bind.execute(
         sa.text(
             "SELECT id, user_id, device_id, scope, status, bound_at, last_active_at, revoked_at "
             "FROM device_bindings"
         )
     ).fetchall()
-    inserted = 0
     for b in bindings:
         exists = bind.execute(
             sa.text(
@@ -107,14 +121,9 @@ def upgrade() -> None:
                 "updated": b.last_active_at or b.bound_at,
             },
         )
-        inserted += 1
-    if inserted:
-        bind.commit()
 
 
 def downgrade() -> None:
     bind = op.get_bind()
-    # 删除回填的 glasses 授权记录（client_type='glasses'）
     bind.execute(sa.text("DELETE FROM mcp_authorizations WHERE client_type = 'glasses'"))
-    bind.commit()
     op.drop_column("mcp_authorizations", "client_type")
