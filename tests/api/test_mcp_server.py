@@ -91,21 +91,30 @@ def _make_settings(tmp_path: Path) -> Settings:
 class _FakeActive:
     """active 状态记录（binding 或 mcp_authorization 通用）。"""
 
-    def __init__(self, scope: str) -> None:
+    def __init__(self, scope: str | list[str]) -> None:
         self.status = "active"
-        self.scope = scope
+        # 模拟 ORM 的 ARRAY 列：存为 list（token_verifier 读取 binding.scope）
+        self.scope = scope.split() if isinstance(scope, str) else list(scope)
         self.last_active_at: object = None
         self.updated_at: object = None
 
 
 class FakeBindingSession:
-    """验证 token 时返回 active 绑定的假 session（binding + mcp_authorization 通用）。
+    """验证 token 时返回 active 绑定/授权的假 session（binding + authorization 通用）。
 
-    scope 参数模拟 mcp_authorizations.scope（权限以授权记录为准）。
+    - scope：device_bindings.scope（legacy 镜像）与 mcp_authorizations.scope
+      （统一授权记录，权限事实源）默认一致；
+    - authorization_scope：可单独指定授权记录 scope（Web 端调整后实时生效场景）；
+      None 表示无授权记录（存量绑定回退 device_bindings.scope 场景）。
     """
 
-    def __init__(self, scope: str = "moments.read moments.write") -> None:
+    def __init__(
+        self,
+        scope: str = "moments.read moments.write",
+        authorization_scope: str | None | object = ...,
+    ) -> None:
         self._scope = scope
+        self._authorization_scope = scope if authorization_scope is ... else authorization_scope
 
     async def __aenter__(self) -> FakeBindingSession:
         return self
@@ -114,6 +123,20 @@ class FakeBindingSession:
         return None
 
     async def execute(self, stmt: object) -> FakeResult:
+        from app.infrastructure.database.models import DeviceBinding as DeviceBindingORM
+        from app.infrastructure.database.models import McpAuthorization
+
+        entity = None
+        try:
+            descriptions = stmt.column_descriptions  # type: ignore[attr-defined]
+            if descriptions:
+                entity = descriptions[0].get("entity")
+        except Exception:
+            entity = None
+        if entity is DeviceBindingORM:
+            return FakeResult(self._scope)
+        if entity is McpAuthorization:
+            return FakeResult(self._authorization_scope)  # type: ignore[arg-type]
         return FakeResult(self._scope)
 
     async def flush(self) -> None:
@@ -127,10 +150,12 @@ class FakeBindingSession:
 
 
 class FakeResult:
-    def __init__(self, scope: str) -> None:
+    def __init__(self, scope: str | None) -> None:
         self._scope = scope
 
-    def scalar_one_or_none(self) -> _FakeActive:
+    def scalar_one_or_none(self) -> _FakeActive | None:
+        if self._scope is None:
+            return None
         return _FakeActive(self._scope)
 
 
@@ -784,3 +809,195 @@ async def test_pkce_helper() -> None:
     challenge = derive_code_challenge(verifier)
     assert challenge == derive_code_challenge(verifier)
     assert "=" not in challenge
+
+
+@pytest.mark.asyncio
+async def test_glasses_token_legacy_colon_scope(app: FastAPI, tmp_path: Path) -> None:
+    """历史冒号 scope（moments:read）兼容：绑定记录与 token 均为冒号命名时，
+    经规范化后 MCP 工具可正常执行（旧设备无需重新绑定）。"""
+    import sys
+
+    mod = sys.modules[__name__]  # type: ignore[assignment]
+
+    settings = _make_settings(tmp_path)
+    issuer = JwtIssuer(settings)
+    token, _ = issuer.issue_access_token(
+        binding_id=BINDING_ID,
+        user_id=USER_ID,
+        device_id=DEVICE_ID,
+        scope=("moments:read", "moments:write"),
+    )
+
+    original_scope = mod.FAKE_AUTH_SCOPE  # type: ignore[attr-defined]
+    mod.FAKE_AUTH_SCOPE = "moments:read moments:write"  # type: ignore[attr-defined]
+    try:
+        async with _mcp_client(app) as client:
+            session_id = await _initialize(client, token)
+            created = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "bookkeeping_create",
+                        "arguments": {
+                            "amount": 9.9,
+                            "flow": "expense",
+                            "occurredAt": "2026-08-06T12:00:00+08:00",
+                        },
+                    },
+                },
+            )
+            summary = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "bookkeeping_summary", "arguments": {"period": "month"}},
+                },
+            )
+            data = await _post(
+                client,
+                session_id,
+                token,
+                {"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {}},
+            )
+    finally:
+        mod.FAKE_AUTH_SCOPE = original_scope  # type: ignore[attr-defined]
+
+    names = [t["name"] for t in data["result"]["tools"]]
+    assert "bookkeeping_create" in names
+    assert "error" not in summary, summary
+    assert summary["result"]["structuredContent"]["expense"] == 9.9
+    assert "error" not in created, created
+    assert created["result"]["structuredContent"]["amount"] == 9.9
+
+
+@pytest.mark.asyncio
+async def test_glasses_authorization_scope_is_authoritative(app: FastAPI, tmp_path: Path) -> None:
+    """统一授权模型：scope 以 mcp_authorizations 为准而非 token/绑定快照。
+
+    token 与绑定记录都是完整读写，但统一授权记录只剩读 → 写工具 SCOPE_DENIED、
+    读工具可用——Web 端在统一授权列表收窄权限后下一次调用即实时生效（无需重绑）。
+    """
+    import contextlib
+
+    settings = _make_settings(tmp_path)
+    issuer = JwtIssuer(settings)
+    token, _ = issuer.issue_access_token(
+        binding_id=BINDING_ID,
+        user_id=USER_ID,
+        device_id=DEVICE_ID,
+        scope=("moments.read", "moments.write"),
+    )
+
+    @contextlib.asynccontextmanager
+    async def _narrowed_session_factory() -> AsyncGenerator[FakeBindingSession]:
+        # 绑定记录完整读写，但统一授权记录（mcp_authorizations）只有读
+        async with FakeBindingSession(
+            scope="moments.read moments.write", authorization_scope="moments.read"
+        ) as session:
+            yield session
+
+    verifier = MomentTokenVerifier(
+        settings,
+        session_factory=lambda: _narrowed_session_factory(),  # type: ignore[arg-type]
+    )
+    component = McpComponent(settings, verifier=verifier)
+    application = create_application(settings, mcp_component=component)
+
+    async with _mcp_client(application) as client:
+        session_id = await _initialize(client, token)
+        read_ok = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "bookkeeping_summary", "arguments": {"period": "month"}},
+            },
+        )
+        write_denied = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "bookkeeping_create",
+                    "arguments": {
+                        "amount": 10,
+                        "flow": "expense",
+                        "occurredAt": "2026-08-06T12:00:00+08:00",
+                    },
+                },
+            },
+        )
+
+    assert "error" not in read_ok, read_ok
+    assert write_denied["result"]["isError"] is True
+    assert write_denied["result"]["structuredContent"]["error"]["code"] == "SCOPE_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_glasses_legacy_fallback_to_binding_scope(app: FastAPI, tmp_path: Path) -> None:
+    """存量兼容：无统一授权记录时回退 device_bindings.scope（迁移前数据）。"""
+    import contextlib
+
+    settings = _make_settings(tmp_path)
+    issuer = JwtIssuer(settings)
+    token, _ = issuer.issue_access_token(
+        binding_id=BINDING_ID,
+        user_id=USER_ID,
+        device_id=DEVICE_ID,
+        scope=("moments.read", "moments.write"),
+    )
+
+    @contextlib.asynccontextmanager
+    async def _legacy_session_factory() -> AsyncGenerator[FakeBindingSession]:
+        # 绑定记录有完整读写，统一授权记录不存在（authorization_scope=None）
+        async with FakeBindingSession(
+            scope="moments.read moments.write", authorization_scope=None
+        ) as session:
+            yield session
+
+    verifier = MomentTokenVerifier(
+        settings,
+        session_factory=lambda: _legacy_session_factory(),  # type: ignore[arg-type]
+    )
+    component = McpComponent(settings, verifier=verifier)
+    application = create_application(settings, mcp_component=component)
+
+    async with _mcp_client(application) as client:
+        session_id = await _initialize(client, token)
+        created = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "bookkeeping_create",
+                    "arguments": {
+                        "amount": 7.7,
+                        "flow": "expense",
+                        "occurredAt": "2026-08-06T12:00:00+08:00",
+                    },
+                },
+            },
+        )
+
+    assert "error" not in created, created
+    assert created["result"]["structuredContent"]["amount"] == 7.7

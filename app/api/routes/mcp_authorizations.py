@@ -18,8 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_authenticated_user_id
 from app.core.errors import ApplicationError
 from app.infrastructure.database.models import McpAuthorization
+from app.infrastructure.database.repositories.device_repository import (
+    SqlDeviceBindingRepository,
+)
 from app.infrastructure.database.session import get_db_session
-from app.modules.mcp.scope import ALL_SCOPES
+from app.modules.mcp.scope import (
+    ALL_SCOPES,
+    CLIENT_TYPE_GLASSES,
+    CLIENT_TYPE_MCP,
+    device_id_from_client_id,
+    normalize_scope_names,
+)
 from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp-authorizations"])
@@ -29,6 +38,7 @@ class AuthorizationResponse(BaseModel):
     id: str
     clientId: str
     clientName: str | None
+    clientType: str
     scope: list[str]
     status: str
     lastActiveAt: str | None
@@ -53,6 +63,7 @@ def _to_response(orm: McpAuthorization) -> AuthorizationResponse:
         id=str(orm.id),
         clientId=orm.client_id,
         clientName=orm.client_name,
+        clientType=orm.client_type or CLIENT_TYPE_MCP,
         scope=orm.scope.split(),
         status=orm.status,
         lastActiveAt=orm.last_active_at.isoformat() if orm.last_active_at else None,
@@ -90,6 +101,16 @@ async def update_authorization_scope(
             message="未找到该授权记录。",
             status_code=404,
         )
+    # 眼镜设备：同步 device_bindings.scope legacy 镜像（统一授权记录为准）
+    if updated.client_type == CLIENT_TYPE_GLASSES:
+        device_id = device_id_from_client_id(updated.client_id)
+        if device_id:
+            binding = await SqlDeviceBindingRepository(session).get_by_device(device_id)
+            if binding is not None and binding.user_id == user_id:
+                await SqlDeviceBindingRepository(session).update_scope(
+                    binding_id=binding.id,
+                    scope=tuple(normalize_scope_names(body.scope)),
+                )
     return _to_response(updated)
 
 
@@ -107,6 +128,17 @@ async def revoke_authorization(
             message="未找到该授权记录。",
             status_code=404,
         )
+    # 眼镜设备：同步撤销设备绑定（token 立即失效）
+    if revoked.client_type == CLIENT_TYPE_GLASSES:
+        device_id = device_id_from_client_id(revoked.client_id)
+        if device_id:
+            binding = await SqlDeviceBindingRepository(session).get_by_device(device_id)
+            if binding is not None and binding.user_id == user_id and binding.status == "active":
+                from datetime import UTC, datetime
+
+                await SqlDeviceBindingRepository(session).revoke(
+                    binding_id=binding.id, revoked_at=datetime.now(UTC)
+                )
 
 
 __all__ = ["router"]

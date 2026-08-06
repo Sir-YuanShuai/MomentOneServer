@@ -82,6 +82,79 @@ class FakeDeviceRepository:
         return self.devices.get(device_id)
 
 
+class _FakeAuthRecord:
+    """授权记录替身（属性访问兼容 service 层 authz.scope 用法）。"""
+
+    def __init__(
+        self,
+        *,
+        user_id: UUID,
+        client_id: str,
+        client_name: str | None,
+        client_type: str,
+        scope: str,
+    ) -> None:
+        self.id = uuid4()
+        self.user_id = user_id
+        self.client_id = client_id
+        self.client_name = client_name
+        self.client_type = client_type
+        self.scope = scope
+        self.status = "active"
+
+
+class FakeAuthorizationRepository:
+    """统一授权记录（mcp_authorizations）内存替身。"""
+
+    def __init__(self) -> None:
+        self.records: dict[tuple[UUID, str], _FakeAuthRecord] = {}
+
+    async def upsert(
+        self,
+        *,
+        user_id: UUID,
+        client_id: str,
+        client_name: str | None,
+        scope: str,
+        client_type: str = "mcp",
+    ) -> _FakeAuthRecord:
+        key = (user_id, client_id)
+        existing = self.records.get(key)
+        if existing is not None and existing.status == "active":
+            # 保留用户已配置 scope（与真实 repo 语义一致）
+            existing.client_name = client_name or existing.client_name
+            existing.client_type = client_type
+            return existing
+        record = _FakeAuthRecord(
+            user_id=user_id,
+            client_id=client_id,
+            client_name=client_name,
+            client_type=client_type,
+            scope=scope,
+        )
+        self.records[key] = record
+        return record
+
+    async def get_by_user_and_client(self, user_id: UUID, client_id: str) -> _FakeAuthRecord | None:
+        return self.records.get((user_id, client_id))
+
+    async def update_scope_by_client(
+        self, *, user_id: UUID, client_id: str, scope: str
+    ) -> _FakeAuthRecord | None:
+        record = self.records.get((user_id, client_id))
+        if record is None:
+            return None
+        record.scope = scope
+        return record
+
+    async def revoke_by_client(self, *, user_id: UUID, client_id: str) -> _FakeAuthRecord | None:
+        record = self.records.get((user_id, client_id))
+        if record is None:
+            return None
+        record.status = "revoked"
+        return record
+
+
 class FakeBindingRepository:
     def __init__(self) -> None:
         self.bindings: dict[UUID, DeviceBinding] = {}
@@ -234,25 +307,28 @@ def _make_service(
     FakeDeviceRepository,
     JwtIssuer,
     Settings,
+    FakeAuthorizationRepository,
 ]:
     settings = _make_settings(tmp_path)
     issuer = JwtIssuer(settings)
     bindings = FakeBindingRepository()
     codes = FakeBindingCodeRepository()
     devices = FakeDeviceRepository()
+    authorizations = FakeAuthorizationRepository()
     service = DeviceBindingService(
         bindings=bindings,
         codes=codes,
         devices=devices,
         jwt_issuer=issuer,
         settings=settings,
+        authorizations=authorizations,  # type: ignore[arg-type]
     )
-    return service, bindings, codes, devices, issuer, settings
+    return service, bindings, codes, devices, issuer, settings, authorizations
 
 
 @pytest.mark.asyncio
 async def test_create_binding_session_returns_pending_code(tmp_path: Path) -> None:
-    service, _, codes, _, _, _ = _make_service(tmp_path)
+    service, _, codes, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     assert bc.user_id == USER_ID
     assert bc.status == BindingCodeStatus.PENDING
@@ -263,7 +339,7 @@ async def test_create_binding_session_returns_pending_code(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_complete_binding_success(tmp_path: Path) -> None:
-    service, bindings, codes, devices, _, _ = _make_service(tmp_path)
+    service, bindings, codes, devices, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     resp = await service.complete_binding(
         binding_code=bc.code,
@@ -292,7 +368,7 @@ async def test_complete_binding_success(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_complete_binding_invalid_code(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     with pytest.raises(ApplicationError) as exc_info:
         await service.complete_binding(
             binding_code="BIND-not-exist",
@@ -327,7 +403,7 @@ async def test_complete_binding_used_code(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_complete_binding_expired_code(tmp_path: Path) -> None:
-    service, _, codes, _, _, _ = _make_service(tmp_path)
+    service, _, codes, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     # 手动把 expires_at 设为过去
     expired = BindingCode(
@@ -378,7 +454,7 @@ async def test_complete_binding_device_already_bound_other_user(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_complete_binding_same_user_rebind_revokes_old(tmp_path: Path) -> None:
-    service, bindings, _, _, _, _ = _make_service(tmp_path)
+    service, bindings, *_unused = _make_service(tmp_path)
     bc1 = await service.create_binding_session(user_id=USER_ID)
     resp1 = await service.complete_binding(
         binding_code=bc1.code,
@@ -403,7 +479,7 @@ async def test_complete_binding_same_user_rebind_revokes_old(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_refresh_access_token_success(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     resp = await service.complete_binding(
         binding_code=bc.code,
@@ -438,7 +514,7 @@ async def test_refresh_access_token_revoked_binding_fails(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_revoke_binding_not_found(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     with pytest.raises(ApplicationError) as exc_info:
         await service.revoke_binding(user_id=USER_ID, binding_id=uuid4())
     assert exc_info.value.code == "BINDING_NOT_FOUND"
@@ -447,7 +523,7 @@ async def test_revoke_binding_not_found(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_revoke_binding_other_user_returns_not_found(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     resp = await service.complete_binding(
         binding_code=bc.code,
@@ -462,7 +538,7 @@ async def test_revoke_binding_other_user_returns_not_found(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_revoke_binding_already_revoked(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     resp = await service.complete_binding(
         binding_code=bc.code,
@@ -479,7 +555,7 @@ async def test_revoke_binding_already_revoked(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_update_scope_success(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     resp = await service.complete_binding(
         binding_code=bc.code,
@@ -497,7 +573,7 @@ async def test_update_scope_success(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_list_user_bindings(tmp_path: Path) -> None:
-    service, _, _, _, _, _ = _make_service(tmp_path)
+    service, *_unused = _make_service(tmp_path)
     bc = await service.create_binding_session(user_id=USER_ID)
     await service.complete_binding(
         binding_code=bc.code,

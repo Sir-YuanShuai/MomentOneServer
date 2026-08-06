@@ -27,6 +27,14 @@ from app.modules.devices.repository import (
     DeviceBindingRepository,
     DeviceRepository,
 )
+from app.modules.mcp.scope import (
+    CLIENT_TYPE_GLASSES,
+    SCOPE_READ,
+    SCOPE_WRITE,
+    glasses_client_id,
+    normalize_scope_names,
+)
+from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 
 
 def _hash_token(token: str) -> str:
@@ -47,12 +55,15 @@ class DeviceBindingService:
         devices: DeviceRepository,
         jwt_issuer: JwtIssuer,
         settings: Settings,
+        authorizations: McpAuthorizationRepository,
     ) -> None:
         self._bindings = bindings
         self._codes = codes
         self._devices = devices
         self._jwt_issuer = jwt_issuer
         self._settings = settings
+        # 统一授权记录：眼镜设备即 MCP 客户端的一种（client_type="glasses"）
+        self._authorizations = authorizations
 
     async def create_binding_session(
         self,
@@ -62,7 +73,8 @@ class DeviceBindingService:
         device_name: str | None = None,
     ) -> BindingCode:
         """Web 端创建绑定会话，生成 binding_code（5 分钟过期）。"""
-        resolved_scope = scope or ("moments.read", "moments.write")
+        # 规范化 scope 命名（历史冒号 moments:read → moments.read），默认读写全开
+        resolved_scope = normalize_scope_names(scope) or (SCOPE_READ, SCOPE_WRITE)
         code = generate_binding_code(self._settings.binding_code_length)
         expires_at = _now() + timedelta(seconds=self._settings.binding_code_ttl_seconds)
         return await self._codes.create(
@@ -125,40 +137,39 @@ class DeviceBindingService:
             device_name=device_name,
         )
 
-        # 签发 token
-        access_token, expires_in = self._jwt_issuer.issue_access_token(
-            binding_id=UUID("00000000-0000-0000-0000-000000000000"),  # 占位，创建后重签
+        # 统一授权模型：眼镜即 MCP 客户端（client_type=glasses）——扫码绑定
+        # 即创建/更新一条 mcp_authorizations 授权记录（权限唯一事实源）。
+        # 已有 active 授权时保留用户已配置的 scope（重绑不覆盖 Web 端调整）。
+        normalized_scope = normalize_scope_names(tuple(code.scope)) or (SCOPE_READ, SCOPE_WRITE)
+        authz = await self._authorizations.upsert(
             user_id=code.user_id,
-            device_id=device_id,
-            scope=code.scope,
+            client_id=glasses_client_id(device_id),
+            client_name=device_name or device_id,
+            scope=" ".join(normalized_scope),
+            client_type=CLIENT_TYPE_GLASSES,
         )
-        refresh_token = self._jwt_issuer.issue_refresh_token(
-            binding_id=UUID("00000000-0000-0000-0000-000000000000"),
-            user_id=code.user_id,
-            device_id=device_id,
-            scope=code.scope,
-        )
+        effective_scope = normalize_scope_names(tuple(authz.scope.split())) or normalized_scope
 
-        # 创建 binding（存 refresh_token_hash）
+        # 创建 binding（device_bindings.scope 仅为 legacy 镜像，权限以授权记录为准）
         binding = await self._bindings.create(
             user_id=code.user_id,
             device_id=device_id,
-            scope=code.scope,
-            refresh_token_hash=_hash_token(refresh_token),
+            scope=effective_scope,
+            refresh_token_hash=_hash_token("placeholder"),
         )
 
-        # 用真实 binding_id 重签 token
+        # 签发 token（scope = 授权记录的有效权限）
         access_token, expires_in = self._jwt_issuer.issue_access_token(
             binding_id=binding.id,
             user_id=code.user_id,
             device_id=device_id,
-            scope=code.scope,
+            scope=effective_scope,
         )
         refresh_token = self._jwt_issuer.issue_refresh_token(
             binding_id=binding.id,
             user_id=code.user_id,
             device_id=device_id,
-            scope=code.scope,
+            scope=effective_scope,
         )
         await self._bindings.update_refresh_token_hash(
             binding_id=binding.id,
@@ -175,16 +186,20 @@ class DeviceBindingService:
             refresh_token=refresh_token,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=" ".join(code.scope),
+            scope=" ".join(effective_scope),
         )
 
     async def refresh_access_token(self, refresh_token: str) -> TokenResponse:
-        """用 refresh_token 刷新 access_token（滚动续期）。"""
+        """用 refresh_token 刷新 access_token（滚动续期）。
+
+        统一授权模型：scope 以 mcp_authorizations（client_id=glasses:{device_id}）
+        为准而非 refresh_token 里的签发快照——Web 端调整权限后，下一次刷新即生效；
+        存量绑定无授权记录时回退 device_bindings.scope。
+        """
         payload = self._jwt_issuer.verify_refresh_token(refresh_token)
         binding_id = UUID(payload["binding_id"])
         user_id = UUID(payload["sub"])
         device_id = payload["device_id"]
-        scope = tuple(payload.get("scope", "").split())
 
         binding = await self._bindings.get(binding_id)
         if binding is None:
@@ -207,18 +222,28 @@ class DeviceBindingService:
                 status_code=401,
             )
 
+        # 统一授权记录为准的当前权限（兼容历史冒号命名与存量绑定回退）
+        authz = await self._authorizations.get_by_user_and_client(
+            user_id=user_id, client_id=glasses_client_id(device_id)
+        )
+        binding_scopes = normalize_scope_names(tuple(binding.scope or []))
+        authz_scopes = (
+            normalize_scope_names(tuple(authz.scope.split())) if authz is not None else ()
+        )
+        current_scope = authz_scopes or binding_scopes or (SCOPE_READ, SCOPE_WRITE)
+
         # 签发新 access_token + 新 refresh_token（滚动续期）
         access_token, expires_in = self._jwt_issuer.issue_access_token(
             binding_id=binding.id,
             user_id=user_id,
             device_id=device_id,
-            scope=scope,
+            scope=current_scope,
         )
         new_refresh_token = self._jwt_issuer.issue_refresh_token(
             binding_id=binding.id,
             user_id=user_id,
             device_id=device_id,
-            scope=scope,
+            scope=current_scope,
         )
         await self._bindings.update_refresh_token_hash(
             binding_id=binding.id,
@@ -232,7 +257,7 @@ class DeviceBindingService:
             refresh_token=new_refresh_token,
             token_type="Bearer",
             expires_in=expires_in,
-            scope=" ".join(scope),
+            scope=" ".join(current_scope),
         )
 
     async def list_user_bindings(self, user_id: UUID) -> list[DeviceBinding]:
@@ -259,6 +284,10 @@ class DeviceBindingService:
                 status_code=409,
             )
         await self._bindings.revoke(binding_id=binding_id, revoked_at=_now())
+        # 统一授权模型：同步撤销眼镜设备的授权记录（Web 端统一列表实时可见）
+        await self._authorizations.revoke_by_client(
+            user_id=user_id, client_id=glasses_client_id(binding.device_id)
+        )
 
     async def update_scope(
         self, *, user_id: UUID, binding_id: UUID, scope: tuple[str, ...]
@@ -276,4 +305,11 @@ class DeviceBindingService:
                 message="绑定关系不存在。",
                 status_code=404,
             )
-        return await self._bindings.update_scope(binding_id=binding_id, scope=scope)
+        normalized = normalize_scope_names(scope)
+        # 统一授权记录为准 + device_bindings.scope legacy 镜像
+        await self._authorizations.update_scope_by_client(
+            user_id=user_id,
+            client_id=glasses_client_id(binding.device_id),
+            scope=" ".join(normalized),
+        )
+        return await self._bindings.update_scope(binding_id=binding_id, scope=normalized)

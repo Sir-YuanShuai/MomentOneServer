@@ -23,6 +23,7 @@ from app.infrastructure.database.repositories.device_repository import (
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.service import DeviceBindingService
+from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 from app.modules.mcp_oauth.service import (
     GRANT_AUTHORIZATION_CODE,
     MomentOAuthService,
@@ -49,6 +50,7 @@ def _make_service(
         devices=SqlDeviceRepository(session),
         jwt_issuer=jwt_issuer,
         settings=settings,
+        authorizations=McpAuthorizationRepository(session),
     )
 
 
