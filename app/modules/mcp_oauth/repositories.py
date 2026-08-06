@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import McpAuthorization, McpOAuthClient, McpOAuthCode
+from app.modules.mcp.scope import CLIENT_TYPE_MCP
 
 
 class McpClientRepository:
@@ -111,14 +112,15 @@ class McpAuthorizationRepository:
         client_id: str,
         client_name: str | None,
         scope: str,
+        client_type: str = CLIENT_TYPE_MCP,
     ) -> McpAuthorization:
-        """授权完成时创建/更新授权关系。
+        """授权完成时创建/更新授权关系（统一授权记录，覆盖 MCP 客户端与眼镜设备）。
 
-        - 无记录（首次授权）→ 用本次授权请求的 scope 创建
+        - 无记录（首次授权/绑定）→ 用本次 scope 创建
         - 已有 active 记录 → **保留用户已配置的 scope**（Web 端调整过的不被
-          客户端重连覆盖——ChatGPT 重连只请求 moments.read，不能把用户
-          已授予的 moments.write 重置掉）
-        - 已有 revoked 记录 → 重新授权，用本次请求 scope
+          重连/重绑覆盖——ChatGPT 重连只请求 moments.read，不能把用户
+          已授予的 moments.write 重置掉；眼镜重绑同理）
+        - 已有 revoked 记录 → 重新授权，用本次 scope
         """
         stmt = select(McpAuthorization).where(
             McpAuthorization.user_id == user_id,
@@ -133,6 +135,7 @@ class McpAuthorizationRepository:
                 user_id=user_id,
                 client_id=client_id,
                 client_name=client_name,
+                client_type=client_type,
                 scope=scope,
                 status="active",
                 last_active_at=now,
@@ -143,12 +146,14 @@ class McpAuthorizationRepository:
         elif orm.status == "active":
             # 保留用户配置的 scope（Web 端可能已调整），仅刷新活跃信息
             orm.client_name = client_name or orm.client_name
+            orm.client_type = client_type
             orm.last_active_at = now
             orm.updated_at = now
         else:
             # revoked → 重新授权
             orm.scope = scope
             orm.client_name = client_name or orm.client_name
+            orm.client_type = client_type
             orm.status = "active"
             orm.revoked_at = None
             orm.last_active_at = now
@@ -189,6 +194,23 @@ class McpAuthorizationRepository:
             orm.updated_at = datetime.now(UTC)
             await self._session.flush()
 
+    async def update_scope_by_client(
+        self, *, user_id: UUID, client_id: str, scope: str
+    ) -> McpAuthorization | None:
+        """按 client_id 更新 scope（眼镜设备改权限时设备端 API 调用）。"""
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.user_id == user_id,
+            McpAuthorization.client_id == client_id,
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is None:
+            return None
+        orm.scope = scope
+        orm.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return orm
+
     async def update_scope(
         self, *, authorization_id: UUID, user_id: UUID, scope: str
     ) -> McpAuthorization | None:
@@ -201,6 +223,22 @@ class McpAuthorizationRepository:
         if orm is None:
             return None
         orm.scope = scope
+        orm.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return orm
+
+    async def revoke_by_client(self, *, user_id: UUID, client_id: str) -> McpAuthorization | None:
+        """按 client_id 撤销（眼镜设备解绑时同步撤销授权记录）。"""
+        stmt = select(McpAuthorization).where(
+            McpAuthorization.user_id == user_id,
+            McpAuthorization.client_id == client_id,
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is None:
+            return None
+        orm.status = "revoked"
+        orm.revoked_at = datetime.now(UTC)
         orm.updated_at = datetime.now(UTC)
         await self._session.flush()
         return orm

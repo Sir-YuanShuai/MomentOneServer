@@ -27,7 +27,7 @@ from app.infrastructure.database.repositories.user_repository import resolve_use
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import BindingStatus
-from app.modules.mcp.scope import parse_scopes
+from app.modules.mcp.scope import glasses_client_id, normalize_scope_names, parse_scopes
 from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 
 # Casdoor OIDC token 的 scope 是 OIDC scope（openid/profile/email），
@@ -105,7 +105,6 @@ class MomentTokenVerifier:
         except (KeyError, ValueError, TypeError):
             return None
 
-        scope = parse_scopes(payload.get("scope"))
         grant = payload.get("grant")
         client_id = payload.get("client_id")
 
@@ -118,7 +117,7 @@ class MomentTokenVerifier:
                 authorization = await repo.get_by_user_and_client(user_id, client_id or "")
                 if authorization is None or authorization.status != "active":
                     return None
-                effective_scope = parse_scopes(authorization.scope)
+                effective_scope = normalize_scope_names(parse_scopes(authorization.scope))
                 await repo.touch_active(user_id=user_id, client_id=client_id or "")
             return AccessToken(
                 token=token,
@@ -133,9 +132,13 @@ class MomentTokenVerifier:
                 },
             )
 
-        # 眼镜端 QR Binding token：校验 binding 仍 active
+        # 眼镜端 QR Binding token：校验 binding 仍 active；
+        # 统一授权模型：scope 以 mcp_authorizations（client_id=glasses:{device_id}）
+        # 为准，Web 端调整权限后**下一次调用即实时生效**（与 Web MCP 客户端同模型），
+        # 存量绑定无授权记录时回退 device_bindings.scope；兼容历史冒号命名。
         binding_id = payload.get("binding_id")
-        if binding_id is None:
+        device_id = payload.get("device_id")
+        if binding_id is None or not device_id:
             return None
         try:
             binding_uuid = UUID(binding_id)
@@ -146,18 +149,30 @@ class MomentTokenVerifier:
             stmt = select(DeviceBindingORM).where(DeviceBindingORM.id == binding_uuid)
             result = await session.execute(stmt)
             binding = result.scalar_one_or_none()
-        if binding is None or binding.status != BindingStatus.ACTIVE.value:
-            return None
+            if binding is None or binding.status != BindingStatus.ACTIVE.value:
+                return None
+            authz = await McpAuthorizationRepository(session).get_by_user_and_client(
+                user_id=user_id, client_id=glasses_client_id(device_id)
+            )
+
+        stored_raw = binding.scope or []
+        # ORM 列为 list；防御字符串形式（测试替身 / 历史数据）
+        binding_scopes = normalize_scope_names(
+            tuple(parse_scopes(stored_raw) if isinstance(stored_raw, str) else stored_raw)
+        )
+        authz_scopes = normalize_scope_names(parse_scopes(authz.scope)) if authz is not None else ()
+        payload_scopes = normalize_scope_names(parse_scopes(payload.get("scope")))
+        effective_scopes = authz_scopes or binding_scopes or payload_scopes
 
         return AccessToken(
             token=token,
-            client_id=f"glasses:{payload.get('device_id', '')}",
-            scopes=[*scope],
+            client_id=glasses_client_id(device_id),
+            scopes=[*effective_scopes],
             subject=str(user_id),
             claims={
                 "method": "glasses",
                 "binding_id": binding_id,
-                "device_id": payload.get("device_id"),
+                "device_id": device_id,
             },
         )
 

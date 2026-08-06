@@ -70,10 +70,16 @@ class McpOAuthCode(Base):
 
 
 class McpAuthorization(Base):
-    """MCP 客户端授权关系（Web 端可管理：调整 scope / 撤销）。
+    """统一授权记录（权限事实源，Web 端可管理：调整 scope / 撤销）。
 
-    一次 OAuth 授权（callback 完成）创建/更新一条记录；撤销后该用户
-    该客户端的 token 立即失效（验证时检查 status）。
+    覆盖两类客户端：
+    - MCP OAuth 客户端（client_type="mcp"，client_id=OAuth client_id，如 chatgpt）
+    - 眼镜设备（client_type="glasses"，client_id="glasses:{device_id}"）——
+      扫码绑定即创建/更新一条授权，与 Web 客户端同一套权限模型（scope/status）。
+
+    一次 OAuth 授权（callback 完成）或设备绑定完成时创建/更新一条记录；
+    撤销后该用户该客户端的 token 立即失效（验证时检查 status）。
+    设备绑定（device_bindings）只保留眼镜端 token 生命周期，不再单独管理权限。
     """
 
     __tablename__ = "mcp_authorizations"
@@ -87,6 +93,9 @@ class McpAuthorization(Base):
     )
     client_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     client_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    client_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="mcp", default="mcp"
+    )
     scope: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     last_active_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

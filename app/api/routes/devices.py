@@ -23,6 +23,7 @@ from app.infrastructure.database.session import get_db_session
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import DeviceBinding
 from app.modules.devices.service import DeviceBindingService
+from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
 
 router = APIRouter(prefix="/v1/device", tags=["devices"])
 
@@ -57,6 +58,7 @@ def _make_service(
         devices=SqlDeviceRepository(session),
         jwt_issuer=jwt_issuer,
         settings=settings,
+        authorizations=McpAuthorizationRepository(session),
     )
 
 

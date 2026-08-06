@@ -85,8 +85,15 @@ Moment One 三端架构：
 | TTL | `settings.access_token_ttl_seconds`（默认 900 = 15 分钟） |
 | claims | `sub`, `iss`, `aud`, `iat`, `nbf`, `exp`, `jti`, `scope`, `binding_id`, `device_id` |
 
-`scope` 是空格分隔字符串，如 `moments:read moments:write`。
+`scope` 是空格分隔字符串，如 `moments.read moments.write`。
 `jti` 是 UUID，写入 `device_bindings.access_token_jti`，用于防重放和滚动续期判定。
+
+> **权限管理（MCP 式）**：scope 命名与 MCP 工具一致（`moments.read` / `moments.write` /
+> `moments.delete`，点号分隔）。历史冒号命名（`moments:read`）在边界处自动规范化
+> （`mcp.scope.normalize_scope_names`，回填迁移 0015）。MCP Server 验证时**以
+> `device_bindings.scope` 记录为权限事实源**（与 `mcp_authorizations` 同模型）：Web 端
+> 通过 `PATCH /v1/device/bindings/{id}` 调整读写权限后，下一次 MCP 调用即实时生效，
+> 无需重新扫码；refresh 也以绑定记录为准重签 scope。
 
 ### 3.2 refresh_token
 
@@ -118,6 +125,21 @@ refresh_token 不带 `scope`，刷新时 scope 以 `device_bindings.scope` 为�
 - **refresh_token 自然过期**：30 天后 exp 到期，眼镜端收到 401，需引导用户重新扫码。
 - **未来增强**：如需即时踢下线，可引入 Redis jti 黑名单 + access_token 短 TTL（15 分钟内自然失效）。
 
+### 3.5 统一授权模型（眼镜 = MCP 客户端的一种）
+
+> 2026-08-06 起，设备权限管理并入 **MCP 授权模型**（`mcp_authorizations`），
+> 不再维护两套平行的权限模型（避免 scope 命名/口径漂移）。
+
+| 角色 | 记录 | 说明 |
+|---|---|---|
+| 权限事实源 | `mcp_authorizations` | `client_type` 区分 `mcp`（Web OAuth 客户端）与 `glasses`（眼镜设备，`client_id=glasses:{device_id}`）；scope/status 由 Web 端统一管理，调整后**下一次调用实时生效** |
+| 设备生命周期 | `device_bindings` | 仅保留 token 管理（refresh_token_hash、绑定状态、设备信息）；`scope` 列为 legacy 镜像 |
+
+- **扫码绑定 = 新增一条 glasses 授权**：`complete_binding` 创建/更新 `mcp_authorizations`（已有 active 授权时保留用户已配置 scope，重绑不覆盖）；
+- **权限校验**：MCP Server 验证眼镜 token 时按 `client_id=glasses:{device_id}` 读授权记录 scope（存量无授权记录回退 `device_bindings.scope`，迁移 0015/0016 已回填）；
+- **撤销/删除设备**：`DELETE /v1/mcp/authorizations/{id}`（glasses 类型）同步撤销设备绑定；`DELETE /v1/device/bindings/{id}` 同步撤销授权记录；
+- **Web 端管理**：设置页「授权与设备」统一列表（眼镜设备 + MCP 客户端同款读写权限开关）。
+
 ## 4. API 契约
 
 ### 4.1 Web 端（Casdoor Bearer 鉴权）
@@ -131,7 +153,7 @@ Content-Type: application/json
 
 {
   "device_name": "Rokid Max",
-  "scope": ["moments:read", "moments:write"]
+  "scope": ["moments.read", "moments.write"]
 }
 ```
 
@@ -142,11 +164,11 @@ Content-Type: application/json
   "binding_code": "aBcDeFgHiJkLmNoPqRsTuV",
   "qr_payload": "momentone://bind?code=aBcDeFgHiJkLmNoPqRsTuV",
   "expires_at": "2026-08-04T12:00:05+00:00",
-  "scope": ["moments:read", "moments:write"]
+  "scope": ["moments.read", "moments.write"]
 }
 ```
 
-`scope` 可省略，默认 `("moments:read", "moments:write")`。
+`scope` 可省略，默认 `("moments.read", "moments.write")`。
 `device_name` 可省略，眼镜端在换 token 时可补填。
 
 #### GET /v1/device/bindings — 列出已绑定设备
@@ -163,7 +185,7 @@ Authorization: Bearer <Casdoor ID Token>
   {
     "id": "uuid-binding-id",
     "device_id": "rokid-serial-xxx",
-    "scope": ["moments:read", "moments:write"],
+    "scope": ["moments.read", "moments.write"],
     "status": "active",
     "bound_at": "2026-08-04T12:00:10+00:00",
     "last_active_at": "2026-08-04T15:30:00+00:00",
@@ -179,7 +201,7 @@ PATCH /v1/device/bindings/{binding_id}
 Authorization: Bearer <Casdoor ID Token>
 Content-Type: application/json
 
-{ "scope": ["moments:read"] }
+{ "scope": ["moments.read"] }
 ```
 
 响应 `200`：返回更新后的 `DeviceBindingResponse`。
@@ -232,7 +254,7 @@ grant_type=refresh_token
   "refresh_token": "eyJhbGciOi...",
   "token_type": "Bearer",
   "expires_in": 900,
-  "scope": "moments:read moments:write"
+  "scope": "moments.read moments.write"
 }
 ```
 
@@ -301,7 +323,7 @@ MOMENT_ONE_REFRESH_TOKEN_TTL_SECONDS=2592000
 
 1. **binding_code 防爆破**：22 字符 URL-safe（约 131 bit 熵），5 分钟过期，一次性使用。Server 应对该端点限流（未来增强）。
 2. **私钥隔离**：私钥只在 Server 进程内存，不进 git、不进日志、不下发眼镜。
-3. **scope 最小化**：Web 端默认下发 `moments:read moments:write`，未来可按设备类型收窄。
+3. **scope 最小化**：Web 端默认下发 `moments.read moments.write`，未来可按设备类型收窄。
 4. **device_id 由眼镜生成**：建议用设备序列号或首次启动生成的 UUID，Server 不主动生成，避免被伪造绑定到任意 device_id。
 5. **无 Casdoor 触达**：眼镜端 token 完全由 Server 签发，Casdoor 故障不影响已绑定眼镜。
 6. **refresh_token 不滚动**：30 天硬上限，避免永久在线风险。
