@@ -52,6 +52,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "记账统计（服务端聚合）：周期内收支合计 + 分类小计，口径与 Web 记账板块一致。"
         "period 为 month/quarter/year，可指定 year/month（month 为月份或季度号）。"
     ),
+    "bookkeeping_plan": (
+        "记账意图解析（眼镜端预路由）：输入用户原话，返回 action=summary/create/list 与"
+        "对应参数（含相对周期 year/month 换算）。眼镜端先调本工具再执行对应工具。"
+    ),
     "moments_get": "按 momentId 查询单条完整 Moment（含 type/payload/provenance）。",
 }
 
@@ -116,9 +120,29 @@ def build_mcp_server(
     # 非 Apps 绑定工具在 server 构造后注册
     _register_bookkeeping_create(server, env)
     _register_moments_get(server, env)
+    _register_bookkeeping_plan(server, env)
     _register_bookkeeping_prompt(server)
 
     return server
+
+
+# ---------------------------------------------------------------------------
+# 工具：bookkeeping_plan（记账意图确定性解析）
+# ---------------------------------------------------------------------------
+
+
+def _register_bookkeeping_plan(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="bookkeeping_plan",
+        description=_TOOL_DESCRIPTIONS["bookkeeping_plan"],
+        title="记账意图解析",
+    )
+    async def bookkeeping_plan(  # pyright: ignore[reportUnusedFunction]
+        input: Annotated[
+            str, Field(description="用户原话（如：上个月花了多少 / 记一笔午餐 28.5 元）")
+        ],
+    ) -> object:
+        return await env.call(lambda ctx: tools.bookkeeping_plan(ctx, input=input))
 
 
 # ---------------------------------------------------------------------------
