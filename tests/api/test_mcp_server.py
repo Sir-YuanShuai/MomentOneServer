@@ -1036,3 +1036,67 @@ async def test_bookkeeping_prompt_served(app: FastAPI, tmp_path: Path) -> None:
     assert "bookkeeping_create" in text
     assert "bookkeeping_summary" in text
     assert "上个月" in text
+
+
+@pytest.mark.asyncio
+async def test_bookkeeping_plan_resolves_actions(app: FastAPI, tmp_path: Path) -> None:
+    """bookkeeping_plan：上月→精确 year/month；记一笔→create 参数；非记账→none。"""
+    from datetime import UTC, datetime, timedelta
+
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+
+        async def _plan(input_text: str) -> dict:
+            resp = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {"name": "bookkeeping_plan", "arguments": {"input": input_text}},
+                },
+                headers={
+                    **MCP_HEADERS,
+                    "Authorization": f"Bearer {token}",
+                    "Mcp-Session-Id": session_id,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            message = data[0] if isinstance(data, list) else data
+            return message["result"]["structuredContent"]
+
+        summary = await _plan("上个月花了多少钱")
+        now = datetime.now(UTC)
+        expected_month = now.month - 1 if now.month > 1 else 12
+        expected_year = now.year if now.month > 1 else now.year - 1
+        assert summary["action"] == "summary"
+        assert summary["args"] == {
+            "period": "month",
+            "year": expected_year,
+            "month": expected_month,
+        }
+
+        create = await _plan("记一笔午餐28.5元")
+        assert create["action"] == "create"
+        assert create["args"]["amount"] == 28.5
+        assert create["args"]["flow"] == "expense"
+        assert create["args"]["category"] == "餐饮"
+        assert create["args"]["idempotencyKey"]
+
+        create2 = await _plan("昨天打车花了20")
+        assert create2["action"] == "create"
+        assert create2["args"]["category"] == "交通"
+        assert datetime.fromisoformat(create2["args"]["occurredAt"]) >= datetime.now(
+            UTC
+        ) - timedelta(days=1, hours=1)
+
+        listed = await _plan("3月账单")
+        assert listed["action"] == "list"
+
+        none = await _plan("今天天气不错")
+        assert none["action"] == "none"
+        assert none["reply"]

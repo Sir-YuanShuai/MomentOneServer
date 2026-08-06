@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from mcp.types import CallToolResult, TextContent
@@ -529,6 +530,142 @@ async def bookkeeping_summary(
 
 
 # ---------------------------------------------------------------------------
+# 工具：bookkeeping_plan（记账意图确定性解析，供眼镜端预路由）
+# ---------------------------------------------------------------------------
+
+# 常见分类关键词（与 Web 记账口径一致的常见分类）
+_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("餐饮", ("餐", "饭", "吃", "喝", "咖啡", "奶茶", "外卖")),
+    ("交通", ("打车", "出租车", "地铁", "公交", "高铁", "机票", "加油", "停车")),
+    ("购物", ("买", "购物", "淘宝", "京东", "衣服", "鞋", "超市")),
+    ("娱乐", ("电影", "游戏", "演唱会", "KTV", "球赛")),
+    ("居住", ("房租", "水电", "物业", "燃气")),
+    ("医疗", ("药", "医院", "挂号", "体检")),
+]
+
+
+def _resolve_period(text: str, now: datetime) -> dict:
+    """时间词 → (period, year, month)。默认当月；支持上月/上季度/今年/去年/某年/某月。"""
+    year = now.year
+    month = now.month
+    if re.search(r"去年|上年|上一年", text):
+        return {"period": "year", "year": year - 1, "month": None}
+    if re.search(r"今年|本年", text):
+        return {"period": "year", "year": year, "month": None}
+    if re.search(r"上季度|上季|上个季度", text):
+        q = (now.month - 1) // 3
+        prev_q = q - 1 if q > 0 else 3
+        prev_year = year if q > 0 else year - 1
+        return {"period": "quarter", "year": prev_year, "month": prev_q}
+    if re.search(r"本季度|本季|这个季度", text):
+        return {"period": "quarter", "year": year, "month": (now.month - 1) // 3 + 1}
+    if re.search(r"上个月|上月|前一个月", text):
+        m = month - 1 if month > 1 else 12
+        y = year if month > 1 else year - 1
+        return {"period": "month", "year": y, "month": m}
+    if re.search(r"这个月|本月|这个月", text):
+        return {"period": "month", "year": year, "month": month}
+    ym = re.search(r"(\d{4})年(\d{1,2})月", text)
+    if ym:
+        return {"period": "month", "year": int(ym.group(1)), "month": int(ym.group(2))}
+    m = re.search(r"(\d{1,2})月", text)
+    if m:
+        return {"period": "month", "year": year, "month": int(m.group(1))}
+    y = re.search(r"(\d{4})年", text)
+    if y:
+        return {"period": "year", "year": int(y.group(1)), "month": None}
+    return {"period": "month", "year": year, "month": month}
+
+
+def _resolve_create(text: str, now: datetime) -> dict | None:
+    """记一笔解析：金额/流向/分类/时间。无法识别 → None。"""
+    amount_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:元|块|毛)?", text)
+    if not amount_match:
+        return None
+    amount = round(float(amount_match.group(1)), 2)
+    flow = "income" if re.search(r"收入|赚|进账|入账", text) else "expense"
+    category = None
+    for name, keywords in _CATEGORY_KEYWORDS:
+        if any(k in text for k in keywords):
+            category = name
+            break
+    # 发生时间：昨天 → now-1d；带“早上/中午/晚上”保持当天；其余用 now
+    occurred_at = now.isoformat()
+    if re.search(r"昨天", text):
+        occurred_at = (now - timedelta(days=1)).isoformat()
+    return {
+        "amount": amount,
+        "flow": flow,
+        "category": category,
+        "occurredAt": occurred_at,
+        "idempotencyKey": str(uuid4()),
+    }
+
+
+async def bookkeeping_plan(
+    ctx: McpCallContext,
+    *,
+    input: str,
+) -> CallToolResult:
+    """记账意图确定性解析（供眼镜端预路由，工具/解析逻辑均在远程）。
+
+    输入用户原话，输出结构化计划：
+    - action=summary → 用 args(period/year/month) 调 bookkeeping_summary
+    - action=create → 用 args(amount/flow/category/occurredAt/idempotencyKey) 调 bookkeeping_create
+    - action=list → 用 args(limit/from/to) 调 bookkeeping_list
+    - action=none → reply 提示话术（眼镜端可降级给 LLM）
+    """
+    ctx.require_scope("moments.read")
+    text = str(input or "").strip()
+    now = datetime.now(UTC)
+
+    if not text:
+        return _text_result(
+            {"action": "none", "args": {}, "reply": "没有听清要做什么，请再说一遍。"}
+        )
+
+    # 记账（写）：记一笔/记账/花了 xx/消费 xx/支出 xx/收入 xx
+    looks_create = bool(
+        re.search(r"记(?:一笔|一下|个)|记账|入账", text)
+        or re.search(r"(花了|消费|支出|花了|用掉|收入|赚了)\s*\d", text)
+    )
+    if looks_create:
+        create_args = _resolve_create(text, now)
+        if create_args is not None:
+            return _text_result({"action": "create", "args": create_args})
+
+    # 查统计：花了多少/收支/结余/开销/账单统计
+    looks_summary = bool(
+        re.search(
+            r"花了多少|用了多少|开销多少|收支|结余|账单统计|支出.*(多少|统计|汇总)|收入.*(多少|统计|汇总)",
+            text,
+        )
+    )
+    if looks_summary:
+        period_info = _resolve_period(text, now)
+        args: dict = {"period": period_info["period"]}
+        if period_info.get("year") is not None:
+            args["year"] = period_info["year"]
+        if period_info.get("month") is not None:
+            args["month"] = period_info["month"]
+        return _text_result({"action": "summary", "args": args})
+
+    # 查明细：账单/明细/列表/消费记录
+    looks_list = bool(re.search(r"明细|账单|列表|消费记录|订单记录|流水", text))
+    if looks_list:
+        return _text_result({"action": "list", "args": {"limit": 20}})
+
+    return _text_result(
+        {
+            "action": "none",
+            "args": {},
+            "reply": "我没听清要查哪笔账。可以试试「上个月花了多少」「3月账单」"
+            "或「记一笔午餐 28.5 元」。",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
 # 工具：moments_get
 # ---------------------------------------------------------------------------
 
@@ -606,6 +743,7 @@ __all__ = [
     "bookkeeping_create",
     "bookkeeping_list",
     "bookkeeping_summary",
+    "bookkeeping_plan",
     "moments_get",
     "err_result",
 ]
