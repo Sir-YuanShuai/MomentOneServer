@@ -31,16 +31,30 @@ from app.modules.mcp.token_verifier import MomentTokenVerifier
 logger = logging.getLogger(__name__)
 
 
+# MCP Apps UI 构建产物默认位置（相对仓库根/容器工作目录 /app，双环境可用）
+_DEFAULT_APPS_HTML_REL = "mcp_apps/bookkeeping/dist/bookkeeping.html"
+
+
 def _load_apps_html(settings: Settings) -> str | None:
-    """读取 MCP Apps UI 单文件产物（bookkeeping.html）。"""
-    path = settings.mcp_apps_html_path
-    if not path:
-        return None
-    p = Path(path)
-    if not p.is_file():
-        logger.warning("mcp_apps_html_path 指向的文件不存在：%s", path)
-        return None
-    return p.read_text(encoding="utf-8")
+    """读取 MCP Apps UI 单文件产物（bookkeeping.html）。
+
+    候选顺序：settings.mcp_apps_html_path → 默认相对路径（本地仓库根 / 容器 /app
+    均适用），保证未配置环境变量时也能加载真实 UI（降级占位仅作为最后兜底）。
+    """
+    candidates = [settings.mcp_apps_html_path, _DEFAULT_APPS_HTML_REL]
+    for path in candidates:
+        if not path:
+            continue
+        p = Path(path)
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+        if path == settings.mcp_apps_html_path:
+            logger.warning("mcp_apps_html_path 指向的文件不存在：%s", path)
+    logger.warning(
+        "MCP Apps UI 未找到（%s），ui://moment-one/bookkeeping 使用降级占位资源",
+        _DEFAULT_APPS_HTML_REL,
+    )
+    return None
 
 
 class McpComponent:
