@@ -117,7 +117,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | PATCH | `/v1/moments/{id}` | 已实现 | 修改（乐观锁） |
 | DELETE | `/v1/moments/{id}` | 已实现 | 软删除（两阶段确认） |
 | POST | `/v1/assets/upload-intents` | 已实现 | 创建 Asset + 返回 Presigned PUT URL |
-| POST | `/v1/assets/{assetId}/complete` | 已实现 | head_object 校验 + 状态机 ready |
+| POST | `/v1/assets/{assetId}/complete` | 已实现 | head_object 校验 + 状态机 ready；image 类同步生成 WebP 缩略图，失败降级不影响上传 |
 | GET | `/v1/assets/{assetId}` | 已实现 | Asset 元数据查询 |
 | POST | `/v1/assets/{assetId}/download-url` | 已实现 | 短期 GET Presigned URL（仅 READY） |
 | POST | `/v1/device/bindings` | 已实现 | 创建绑定会话（Web 端，Casdoor Bearer） |
@@ -170,7 +170,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | MCP Apps UI | `mcp_apps/bookkeeping/`（vite 单文件构建 → dist/bookkeeping.html，`@modelcontextprotocol/ext-apps` app-bridge） | 已实现（记账列表 + 收支/分类统计；结构化渲染 + 文本降级） |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
-| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 媒体关联） |
+| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 媒体关联 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）） |
 
 ## 未实现的目标表
 
@@ -199,4 +199,4 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | 内置记录类型单测 | `tests/unit/test_moment_types.py` | 已实现（bookkeeping / habit / general 校验） |
 | 习惯目标 API 测试 | `tests/api/test_habit_goals_api.py` | 已实现（CRUD + revision 冲突 + 两阶段删除） |
 | 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
-| Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 媒体集成） |
+| Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 媒体集成 + 缩略图生成/降级/URL 签发） |

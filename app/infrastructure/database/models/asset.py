@@ -50,6 +50,7 @@ class Asset(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    thumbnail_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

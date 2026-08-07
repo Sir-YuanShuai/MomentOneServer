@@ -37,6 +37,7 @@ def _orm_to_domain(orm: AssetORM) -> Asset:
         checksum_sha256=orm.checksum_sha256,
         created_at=orm.created_at,
         ready_at=orm.ready_at,
+        thumbnail_generated_at=orm.thumbnail_generated_at,
         deleted_at=orm.deleted_at,
     )
 
@@ -105,6 +106,24 @@ class AssetRepository:
         orm.size_bytes = size_bytes
         orm.checksum_sha256 = checksum_sha256
         orm.ready_at = datetime.now(UTC)
+        await self._session.flush()
+        await self._session.refresh(orm)
+        return _orm_to_domain(orm)
+
+    async def mark_thumbnail_ready(self, asset_id: UUID, user_id: UUID) -> Asset | None:
+        """标记缩略图已生成。缩略图生成失败时不调用（降级为无缩略图）。"""
+        stmt = select(AssetORM).where(
+            and_(
+                AssetORM.id == asset_id,
+                AssetORM.user_id == user_id,
+                AssetORM.deleted_at.is_(None),
+            )
+        )
+        result = await self._session.execute(stmt)
+        orm = result.scalar_one_or_none()
+        if orm is None:
+            return None
+        orm.thumbnail_generated_at = datetime.now(UTC)
         await self._session.flush()
         await self._session.refresh(orm)
         return _orm_to_domain(orm)

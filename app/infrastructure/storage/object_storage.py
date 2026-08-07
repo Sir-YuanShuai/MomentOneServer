@@ -57,6 +57,25 @@ class ObjectStorage(Protocol):
 
     def head_object(self, *, user_id: str, asset_id: str) -> ObjectMetadata: ...
 
+    def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes: ...
+
+    def put_thumbnail(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> None: ...
+
+    def create_thumbnail_url(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        expires_in_seconds: int,
+    ) -> str: ...
+
     def create_download_url(
         self,
         *,
@@ -136,6 +155,46 @@ class S3ObjectStorage:
         expires_in_seconds: int,
     ) -> str:
         key = build_storage_key(UUID(user_id), UUID(asset_id))
+        return self._client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=expires_in_seconds,
+            HttpMethod="GET",
+        )
+
+    def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes:
+        """读取原图字节（缩略图生成用）。"""
+        key = build_storage_key(UUID(user_id), UUID(asset_id))
+        resp = self._client.get_object(Bucket=self._bucket, Key=key)
+        try:
+            return resp["Body"].read()
+        finally:
+            resp["Body"].close()
+
+    def put_thumbnail(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> None:
+        key = build_storage_key(UUID(user_id), UUID(asset_id), "thumbnail")
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
+
+    def create_thumbnail_url(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        expires_in_seconds: int,
+    ) -> str:
+        key = build_storage_key(UUID(user_id), UUID(asset_id), "thumbnail")
         return self._client.generate_presigned_url(
             ClientMethod="get_object",
             Params={"Bucket": self._bucket, "Key": key},

@@ -9,6 +9,7 @@
 - POST /v1/moments 含 assetIds 时建立关联 + 响应 media 数组
 """
 
+import base64
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,11 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 USER_ID = UUID("22222222-2222-4222-8222-222222222222")
+
+# 1x1 红色 PNG，用于缩略图生成测试（真实可解码图片字节）
+PNG_1PX = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
 
 
 def _generate_rsa_keypair(tmp_path: Path) -> tuple[Path, Path]:
@@ -104,6 +110,7 @@ class FakeAssetRepository:
             checksum_sha256=None,
             created_at=datetime.now(UTC),
             ready_at=None,
+            thumbnail_generated_at=None,
             deleted_at=None,
         )
         self._store[asset_id] = asset
@@ -137,6 +144,27 @@ class FakeAssetRepository:
             checksum_sha256=checksum_sha256,
             created_at=a.created_at,
             ready_at=datetime.now(UTC),
+            thumbnail_generated_at=a.thumbnail_generated_at,
+            deleted_at=None,
+        )
+        return self._store[asset_id]
+
+    async def mark_thumbnail_ready(self, asset_id: UUID, user_id: UUID) -> Asset | None:
+        a = self._store.get(asset_id)
+        if a is None or a.user_id != user_id:
+            return None
+        self._store[asset_id] = Asset(
+            id=a.id,
+            user_id=a.user_id,
+            state=a.state,
+            kind=a.kind,
+            storage_key=a.storage_key,
+            content_type=a.content_type,
+            size_bytes=a.size_bytes,
+            checksum_sha256=a.checksum_sha256,
+            created_at=a.created_at,
+            ready_at=a.ready_at,
+            thumbnail_generated_at=datetime.now(UTC),
             deleted_at=None,
         )
         return self._store[asset_id]
@@ -156,6 +184,7 @@ class FakeAssetRepository:
             checksum_sha256=a.checksum_sha256,
             created_at=a.created_at,
             ready_at=None,
+            thumbnail_generated_at=a.thumbnail_generated_at,
             deleted_at=None,
         )
         return self._store[asset_id]
@@ -489,15 +518,27 @@ class FakeStorage(ObjectStorage):
 
     def __init__(self) -> None:
         self._objects: dict[tuple[str, str], ObjectMetadata] = {}
+        self._blobs: dict[tuple[str, str], bytes] = {}
+        self._thumbnails: dict[tuple[str, str], bytes] = {}
         self.upload_ttl = 600
         self.download_ttl = 300
 
-    def seed_object(self, *, user_id: str, asset_id: str, size: int, content_type: str) -> None:
+    def seed_object(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        size: int,
+        content_type: str,
+        data: bytes | None = None,
+    ) -> None:
         self._objects[(user_id, asset_id)] = ObjectMetadata(
             size_bytes=size,
             content_type=content_type,
             etag="fake-etag",
         )
+        if data is not None:
+            self._blobs[(user_id, asset_id)] = data
 
     def create_upload_intent(
         self,
@@ -521,6 +562,37 @@ class FakeStorage(ObjectStorage):
         if meta is None:
             raise KeyError(f"object not found: {user_id}/{asset_id}")
         return meta
+
+    def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes:
+        try:
+            return self._blobs[(user_id, asset_id)]
+        except KeyError:
+            raise KeyError(f"blob not found: {user_id}/{asset_id}") from None
+
+    def put_thumbnail(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> None:
+        self._thumbnails[(user_id, asset_id)] = data
+
+    def create_thumbnail_url(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        expires_in_seconds: int,
+    ) -> str:
+        return f"https://fake-s3.test/thumbnail/{user_id}/{asset_id}?expires={expires_in_seconds}"
+
+    def has_thumbnail(self, *, user_id: str, asset_id: str) -> bool:
+        return (user_id, asset_id) in self._thumbnails
+
+    def thumbnail_bytes(self, *, user_id: str, asset_id: str) -> bytes:
+        return self._thumbnails[(user_id, asset_id)]
 
     def create_download_url(
         self,
@@ -571,9 +643,9 @@ def app(
     async def _fake_assets_storage() -> ObjectStorage:
         return fake_storage
 
-    async def _fake_moments_storage() -> None:
-        # moments 路由的 _get_storage 在测试中返回 None（不签发 downloadUrl）
-        return None
+    async def _fake_moments_storage() -> ObjectStorage:
+        # moments 路由复用 FakeStorage，验证 thumbnailUrl/downloadUrl 签发
+        return fake_storage
 
     # 替换路由内引用的 repository 类
     original_moment_repo = moments_routes.PostgresMomentRepository
@@ -692,6 +764,91 @@ async def test_complete_upload_success(
     assert body["contentType"] == "image/jpeg"
     # 审计已记录
     assert any(c["event_type"] == "asset.upload_completed" for c in fake_repos["audit"].calls)
+
+
+@pytest.mark.asyncio
+async def test_complete_upload_generates_thumbnail(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    """image 类 complete 成功后应生成缩略图并标记 thumbnail_generated_at。"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        intent_resp = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/jpeg", "sizeBytes": len(PNG_1PX)},
+        )
+        asset_id = intent_resp.json()["assetId"]
+        fake_storage.seed_object(
+            user_id=str(USER_ID),
+            asset_id=asset_id,
+            size=len(PNG_1PX),
+            content_type="image/jpeg",
+            data=PNG_1PX,
+        )
+        comp_resp = await client.post(f"/v1/assets/{asset_id}/complete", json={})
+    assert comp_resp.status_code == 200
+    assert comp_resp.json()["state"] == "ready"
+    # 缩略图已写入对象存储
+    assert fake_storage.has_thumbnail(user_id=str(USER_ID), asset_id=asset_id)
+    thumb = fake_storage.thumbnail_bytes(user_id=str(USER_ID), asset_id=asset_id)
+    assert thumb[:4] == b"RIFF"  # WebP 魔数
+    # 领域层已标记
+    stored = await fake_repos["asset"].get_by_id(UUID(asset_id), USER_ID)
+    assert stored is not None and stored.thumbnail_generated_at is not None
+    # 审计已记录
+    assert any(c["event_type"] == "asset.thumbnail_generated" for c in fake_repos["audit"].calls)
+
+
+@pytest.mark.asyncio
+async def test_complete_upload_corrupt_image_degrades(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    """图片损坏/不可解码时缩略图降级，不影响上传成功。"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        intent_resp = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/jpeg", "sizeBytes": 512},
+        )
+        asset_id = intent_resp.json()["assetId"]
+        fake_storage.seed_object(
+            user_id=str(USER_ID),
+            asset_id=asset_id,
+            size=512,
+            content_type="image/jpeg",
+            data=b"this is not a real image",
+        )
+        comp_resp = await client.post(f"/v1/assets/{asset_id}/complete", json={})
+    assert comp_resp.status_code == 200
+    assert comp_resp.json()["state"] == "ready"
+    assert not fake_storage.has_thumbnail(user_id=str(USER_ID), asset_id=asset_id)
+    stored = await fake_repos["asset"].get_by_id(UUID(asset_id), USER_ID)
+    assert stored is not None and stored.thumbnail_generated_at is None
+
+
+@pytest.mark.asyncio
+async def test_complete_upload_audio_no_thumbnail(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    """非 image 类不生成缩略图。"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        intent_resp = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "audio/mpeg", "sizeBytes": 4096},
+        )
+        asset_id = intent_resp.json()["assetId"]
+        fake_storage.seed_object(
+            user_id=str(USER_ID),
+            asset_id=asset_id,
+            size=4096,
+            content_type="audio/mpeg",
+        )
+        comp_resp = await client.post(f"/v1/assets/{asset_id}/complete", json={})
+    assert comp_resp.status_code == 200
+    assert not fake_storage.has_thumbnail(user_id=str(USER_ID), asset_id=asset_id)
+    stored = await fake_repos["asset"].get_by_id(UUID(asset_id), USER_ID)
+    assert stored is not None and stored.thumbnail_generated_at is None
 
 
 @pytest.mark.asyncio
@@ -869,6 +1026,55 @@ async def test_create_moment_with_asset_ids(
     assert len(links) == 2
     assert links[0].position == 0
     assert links[1].position == 1
+
+
+@pytest.mark.asyncio
+async def test_moment_media_thumbnail_url_signed_when_available(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    """有缩略图的 asset 在 media 响应中签发 thumbnailUrl；无缩略图的保持 null。"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # asset1：真实图片 → 生成缩略图；asset2：无数据 → 降级无缩略图
+        intent1 = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/jpeg", "sizeBytes": len(PNG_1PX)},
+        )
+        asset1 = intent1.json()["assetId"]
+        intent2 = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/png", "sizeBytes": 2048},
+        )
+        asset2 = intent2.json()["assetId"]
+        fake_storage.seed_object(
+            user_id=str(USER_ID),
+            asset_id=asset1,
+            size=len(PNG_1PX),
+            content_type="image/jpeg",
+            data=PNG_1PX,
+        )
+        fake_storage.seed_object(
+            user_id=str(USER_ID), asset_id=asset2, size=2048, content_type="image/png"
+        )
+        for aid in (asset1, asset2):
+            await client.post(f"/v1/assets/{aid}/complete", json={})
+        moment_resp = await client.post(
+            "/v1/moments",
+            json={"title": "带缩略图 Moment", "assetIds": [asset1, asset2]},
+            headers={"Idempotency-Key": "thumb-moment-001"},
+        )
+        # 详情接口同样签发
+        detail_resp = await client.get(f"/v1/moments/{moment_resp.json()['id']}")
+    assert moment_resp.status_code == 201
+    body = moment_resp.json()
+    assert body["media"][0]["assetId"] == asset1
+    assert body["media"][0]["thumbnailUrl"].startswith("https://fake-s3.test/thumbnail/")
+    assert body["media"][1]["assetId"] == asset2
+    assert body["media"][1]["thumbnailUrl"] is None
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["media"][0]["thumbnailUrl"].startswith("https://fake-s3.test/thumbnail/")
+    assert detail["media"][0]["downloadUrl"].startswith("https://fake-s3.test/download/")
 
 
 @pytest.mark.asyncio

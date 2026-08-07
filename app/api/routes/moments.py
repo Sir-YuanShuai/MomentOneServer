@@ -165,7 +165,9 @@ async def _build_media(
 ) -> list[dict]:
     """读取 moment_assets + assets，组装 media 响应。
 
-    - 列表场景：include_download_url=False，只返回 thumbnailUrl（本期不做缩略图，留 null）
+    - thumbnailUrl：仅当缩略图已生成（thumbnail_generated_at 非空）时签发；
+      存量文件/非 image 类保持 null，前端降级为图标占位（不加载图片，避免慢）。
+    - 列表场景：include_download_url=False，只返回 thumbnailUrl
     - 详情场景：include_download_url=True，返回 downloadUrl + thumbnailUrl
     - storage 未配置时省略所有 URL 字段
     """
@@ -181,8 +183,14 @@ async def _build_media(
         entry: dict = {
             "assetId": str(asset.id),
             "type": asset.content_type,
-            "thumbnailUrl": None,  # 本期不做缩略图
+            "thumbnailUrl": None,  # 缩略图已生成才签发，存量/非 image 保持 null（前端降级）
         }
+        if storage is not None and asset.thumbnail_generated_at is not None:
+            entry["thumbnailUrl"] = storage.create_thumbnail_url(
+                user_id=str(user_id),
+                asset_id=str(asset.id),
+                expires_in_seconds=settings.s3_download_url_ttl_seconds,
+            )
         if include_download_url and storage is not None:
             url = storage.create_download_url(
                 user_id=str(user_id),
