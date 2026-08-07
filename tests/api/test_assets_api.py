@@ -1029,6 +1029,64 @@ async def test_create_moment_with_asset_ids(
 
 
 @pytest.mark.asyncio
+async def test_update_moment_replaces_preserves_and_removes_assets(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    """PATCH assetIds 为完整列表替换；省略保持不变；[] 移除全部。"""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        asset_ids: list[str] = []
+        for _index in range(2):
+            intent = await client.post(
+                "/v1/assets/upload-intents",
+                json={"contentType": "image/png", "sizeBytes": len(PNG_1PX)},
+            )
+            asset_id = intent.json()["assetId"]
+            fake_storage.seed_object(
+                user_id=str(USER_ID),
+                asset_id=asset_id,
+                size=len(PNG_1PX),
+                content_type="image/png",
+                data=PNG_1PX,
+            )
+            await client.post(f"/v1/assets/{asset_id}/complete", json={})
+            asset_ids.append(asset_id)
+
+        created = await client.post(
+            "/v1/moments",
+            json={"title": "附件更新", "assetIds": [asset_ids[0]]},
+            headers={"Idempotency-Key": "asset-update-create"},
+        )
+        moment_id = created.json()["id"]
+
+        replaced = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 1, "assetIds": [asset_ids[1]]},
+        )
+        preserved = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 2, "title": "仅改标题"},
+        )
+        removed = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 3, "assetIds": []},
+        )
+
+    assert replaced.status_code == 200
+    assert [item["assetId"] for item in replaced.json()["media"]] == [asset_ids[1]]
+    assert [item["assetId"] for item in preserved.json()["media"]] == [asset_ids[1]]
+    assert removed.json()["media"] == []
+
+    links = await fake_repos["moment_asset"].list_by_moment(UUID(moment_id), USER_ID)
+    assert links == []
+    updated_snapshots = [
+        call["snapshot"] for call in fake_repos["revision"].calls if call["operation"] == "updated"
+    ]
+    assert updated_snapshots[0]["media"][0]["assetId"] == asset_ids[1]
+    assert "downloadUrl" not in updated_snapshots[0]["media"][0]
+
+
+@pytest.mark.asyncio
 async def test_moment_media_thumbnail_url_signed_when_available(
     app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
 ) -> None:
