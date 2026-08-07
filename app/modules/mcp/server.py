@@ -287,7 +287,12 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
         title="记账统计",
     )
     async def bookkeeping_summary(  # pyright: ignore[reportUnusedFunction]
-        period: Annotated[Literal["month", "quarter", "year"], Field(description="统计周期")],
+        period: Annotated[
+            str,
+            Field(
+                description="统计周期：month/quarter/year，或 custom（配合 from_/to 自定义范围）"
+            ),
+        ],
         year: Annotated[int | None, Field(default=None, description="年份（默认当前年）")] = None,
         month: Annotated[
             int | None,
@@ -296,6 +301,17 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
         ledger: Annotated[str | None, Field(default=None, description="按账本过滤")] = None,
         category: Annotated[
             str | None, Field(default=None, description="按分类过滤（分类小计）")
+        ] = None,
+        from_: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description="自定义范围开始（ISO-8601，如今天 0 点；传了则优先于 period）",
+            ),
+        ] = None,
+        to: Annotated[
+            str | None,
+            Field(default=None, description="自定义范围结束（ISO-8601，开区间）"),
         ] = None,
     ) -> object:
         return await env.call(
@@ -306,6 +322,8 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
                 month=month,
                 ledger=ledger,
                 category=category,
+                from_=from_,
+                to=to,
             )
         )
 

@@ -1100,3 +1100,67 @@ async def test_bookkeeping_plan_resolves_actions(app: FastAPI, tmp_path: Path) -
         none = await _plan("今天天气不错")
         assert none["action"] == "none"
         assert none["reply"]
+
+
+@pytest.mark.asyncio
+async def test_bookkeeping_plan_today_and_summary_custom_range(
+    app: FastAPI, tmp_path: Path
+) -> None:
+    """plan「今天/昨天」→ summary custom from/to；summary 支持自定义范围统计。"""
+    from datetime import UTC, datetime
+
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+
+        async def _call(name: str, arguments: dict) -> dict:
+            resp = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                },
+                headers={
+                    **MCP_HEADERS,
+                    "Authorization": f"Bearer {token}",
+                    "Mcp-Session-Id": session_id,
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            message = data[0] if isinstance(data, list) else data
+            return message["result"]["structuredContent"]
+
+        today_plan = await _call("bookkeeping_plan", {"input": "今天花了多少钱"})
+        assert today_plan["action"] == "summary"
+        assert today_plan["args"]["period"] == "custom"
+        assert today_plan["args"]["from_"] and today_plan["args"]["to"]
+        now = datetime.now(UTC)
+        assert (
+            today_plan["args"]["from_"]
+            == datetime(now.year, now.month, now.day, tzinfo=UTC).isoformat()
+        )
+
+        yesterday_plan = await _call("bookkeeping_plan", {"input": "昨天花了多少"})
+        assert yesterday_plan["action"] == "summary"
+        assert yesterday_plan["args"]["period"] == "custom"
+
+        # summary 自定义范围：先造今天一笔，范围统计命中
+        created = await _call(
+            "bookkeeping_create",
+            {
+                "amount": 18.8,
+                "flow": "expense",
+                "category": "餐饮",
+                "occurredAt": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert created.get("id")
+        custom = await _call("bookkeeping_summary", today_plan["args"])
+        assert custom["period"] == "custom"
+        assert custom["count"] >= 1
+        assert custom["expense"] >= 18.8
