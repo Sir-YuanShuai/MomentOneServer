@@ -204,6 +204,18 @@ async def _build_media(
     return media
 
 
+def _revision_media_snapshot(media: list[dict]) -> list[dict]:
+    """只保留稳定媒体引用，避免把短期签名 URL 写入版本快照。"""
+    return [
+        {
+            "assetId": item["assetId"],
+            "type": item["type"],
+            "thumbnailUrl": None,
+        }
+        for item in media
+    ]
+
+
 def _to_dict(moment: Moment, media: list[dict] | None = None) -> dict:
     d: dict = {
         "id": str(moment.id),
@@ -294,6 +306,10 @@ class UpdateMomentRequest(BaseModel):
     emotion: dict | None = None
     type: str | None = None  # 记录类型；None = 不修改
     payload: dict | None = None  # 类型化扩展字段；None = 不修改，{} = 清空
+    assetIds: list[str] | None = Field(
+        default=None,
+        description="附件列表；省略表示保持不变，空数组表示移除全部附件",
+    )
 
     @field_validator("persons")
     @classmethod
@@ -473,7 +489,7 @@ async def create_moment(
         moment_id=created.id,
         revision=created.revision,
         operation="created",
-        snapshot=response,
+        snapshot=_to_dict(created, media=_revision_media_snapshot(media)),
         actor_user_id=ctx.user_id,
     )
 
@@ -529,6 +545,8 @@ async def update_moment(
     body: UpdateMomentRequest,
     ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage | None = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     user_id = ctx.user_id
     repo = PostgresMomentRepository(session)
@@ -582,6 +600,42 @@ async def update_moment(
         fields["moment_type"] = merged_type
         fields["payload"] = merged_payload
 
+    # 附件更新采用“完整列表替换”语义：省略保持不变，[] 移除全部。
+    # 先完成所有校验，再修改 Moment 和关联，避免部分更新。
+    resolved_assets = None
+    if body.assetIds is not None:
+        if len(body.assetIds) != len(set(body.assetIds)):
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="assetIds 不能包含重复项。",
+                status_code=400,
+            )
+        asset_repo = AssetRepository(session)
+        resolved_assets = []
+        for asset_id_str in body.assetIds:
+            try:
+                asset_uuid = UUID(asset_id_str)
+            except (ValueError, TypeError) as exc:
+                raise ApplicationError(
+                    code="INVALID_ARGUMENTS",
+                    message=f"assetId 格式无效：{asset_id_str}",
+                    status_code=400,
+                ) from exc
+            asset = await asset_repo.get_by_id(asset_uuid, user_id)
+            if asset is None:
+                raise ApplicationError(
+                    code="ASSET_NOT_FOUND",
+                    message="未找到该 Asset 或无权访问。",
+                    status_code=404,
+                )
+            if asset.state != AssetState.READY:
+                raise ApplicationError(
+                    code="MEDIA_NOT_READY",
+                    message=f"Asset {asset_id_str} 尚未就绪，不能关联到 Moment。",
+                    status_code=409,
+                )
+            resolved_assets.append(asset)
+
     moment = await repo.update(UUID(moment_id), user_id, **fields)
     if moment is None:
         raise ApplicationError(
@@ -589,16 +643,31 @@ async def update_moment(
             message="未找到该 Moment。",
             status_code=404,
         )
-    response = _to_dict(moment)
+    if resolved_assets is not None:
+        link_repo = MomentAssetRepository(session)
+        await link_repo.detach_all(moment.id, user_id)
+        for position, asset in enumerate(resolved_assets):
+            await link_repo.attach(
+                user_id=user_id,
+                moment_id=moment.id,
+                asset_id=asset.id,
+                position=position,
+                role=AssetRole.ORIGINAL,
+            )
 
-    # 记录版本快照
+    media = await _build_media(
+        moment.id, user_id, session, storage, settings, include_download_url=True
+    )
+    response = _to_dict(moment, media=media)
+
+    # 记录版本快照（只保存稳定 Asset 引用，不保存短期签名 URL）
     revision_repo = SqlMomentRevisionRepository(session)
     await revision_repo.append(
         user_id=user_id,
         moment_id=moment.id,
         revision=moment.revision,
         operation="updated",
-        snapshot=response,
+        snapshot=_to_dict(moment, media=_revision_media_snapshot(media)),
         actor_user_id=ctx.user_id,
     )
 
