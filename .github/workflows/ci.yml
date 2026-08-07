@@ -102,6 +102,16 @@ jobs:
           assert get_schema('habit')['title'];
           print('registry schemas OK')"
 
+      - name: Smoke-test MCP Apps UI resource in image
+        run: >-
+          docker exec -e MOMENT_ONE_MCP_APPS_HTML_PATH=/app/mcp_apps/bookkeeping/dist/bookkeeping.html
+          moment-one-server python -c
+          "from app.core.config import Settings;
+          from app.modules.mcp.endpoint import _load_apps_html;
+          html = _load_apps_html(Settings());
+          assert html and 'Moment One 记账' in html;
+          print('MCP Apps UI OK:', len(html), 'bytes')"
+
       - name: Print container logs on failure
         if: failure()
         run: docker logs moment-one-server || true

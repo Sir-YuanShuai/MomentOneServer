@@ -40,4 +40,6 @@ logs/
 
 # MCP Apps UI（node 构建产物不入库）
 mcp_apps/bookkeeping/node_modules/
-mcp_apps/bookkeeping/dist/
+# MCP Apps UI 构建产物纳入 git（生产镜像需要真实 UI，见 PR #26）
+!mcp_apps/bookkeeping/dist/
+!mcp_apps/bookkeeping/dist/bookkeeping.html
