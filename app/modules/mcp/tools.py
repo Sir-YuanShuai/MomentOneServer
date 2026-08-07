@@ -442,18 +442,31 @@ async def bookkeeping_summary(
     month: int | None,
     ledger: str | None,
     category: str | None,
+    from_: str | None = None,
+    to: str | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.read")
 
-    if period not in ("month", "quarter", "year"):
-        raise ApplicationError(
-            code="INVALID_ARGUMENTS",
-            message="period 必须是 month / quarter / year。",
-            status_code=400,
-            details={"period": period},
-        )
-
-    start, end, label = _period_bounds(period, year, month)
+    # 自定义范围（plan 对「今天/昨天」解析为精确 from/to）：范围优先于 period
+    if from_ or to:
+        start = _parse_optional_datetime(from_, "from") if from_ else None
+        end = _parse_optional_datetime(to, "to") if to else None
+        label = {
+            "period": "custom",
+            "from": (start or datetime.min.replace(tzinfo=UTC)).isoformat(),
+            "to": (end or datetime.max.replace(tzinfo=UTC)).isoformat(),
+        }
+        custom = True
+    else:
+        if period not in ("month", "quarter", "year"):
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="period 必须是 month / quarter / year。",
+                status_code=400,
+                details={"period": period},
+            )
+        start, end, label = _period_bounds(period, year, month)
+        custom = False
 
     repo = PostgresMomentRepository(ctx.session)
     payload_eq: dict[str, str] = {}
@@ -505,8 +518,8 @@ async def bookkeeping_summary(
         "balance": round(income - expense, 2),
         "count": count,
         "byCategory": category_share,
-        "from": start.isoformat(),
-        "to": end.isoformat(),
+        "from": (start.isoformat() if start else label.get("from")),
+        "to": (end.isoformat() if end else label.get("to")),
     }
 
     audit_repo = SqlAuditEventRepository(ctx.session)
@@ -521,7 +534,7 @@ async def bookkeeping_summary(
         metadata={
             "tool": "bookkeeping_summary",
             "scopes": list(ctx.scopes),
-            "period": period,
+            "period": "custom" if custom else period,
             "resultCount": count,
         },
     )
@@ -545,7 +558,27 @@ _CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
 
 
 def _resolve_period(text: str, now: datetime) -> dict:
-    """时间词 → (period, year, month)。默认当月；支持上月/上季度/今年/去年/某年/某月。"""
+    """时间词 → (period, year, month) 或 (period=custom, from, to)。
+
+    支持今天/昨天（精确到日的范围统计）、上月/上季度/今年/去年/某年/某月。
+    """
+    # 今天/昨天：按 UTC 日界（Server 无用户时区，与存储口径一致；
+    # 未来可加 timezone 参数按用户时区切日界）
+    if re.search(r"今天|今日|当天", text):
+        start = datetime(now.year, now.month, now.day, tzinfo=UTC)
+        return {
+            "period": "custom",
+            "from": start.isoformat(),
+            "to": (start + timedelta(days=1)).isoformat(),
+        }
+    if re.search(r"昨天|昨日", text):
+        day = now - timedelta(days=1)
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        return {
+            "period": "custom",
+            "from": start.isoformat(),
+            "to": (start + timedelta(days=1)).isoformat(),
+        }
     year = now.year
     month = now.month
     if re.search(r"去年|上年|上一年", text):
@@ -644,6 +677,10 @@ async def bookkeeping_plan(
     if looks_summary:
         period_info = _resolve_period(text, now)
         args: dict = {"period": period_info["period"]}
+        if period_info.get("from") is not None:
+            # SDK 参数键名：Python 参数 from_ 暴露为 "from_"
+            args["from_"] = period_info["from"]
+            args["to"] = period_info["to"]
         if period_info.get("year") is not None:
             args["year"] = period_info["year"]
         if period_info.get("month") is not None:
