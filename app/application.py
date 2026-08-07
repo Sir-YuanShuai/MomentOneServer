@@ -34,6 +34,32 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             request_id_context.reset(token)
 
 
+class McpRequestLogMiddleware(BaseHTTPMiddleware):
+    """临时诊断：记录每个 POST /mcp 请求的 JSON-RPC method（定位对话流调用链）。使用后移除。"""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        if request.method == "POST" and request.url.path == "/mcp":
+            try:
+                raw = await request.body()
+                import json as _json
+
+                payload = _json.loads(raw)
+                messages = payload if isinstance(payload, list) else [payload]
+                methods = [m.get("method") for m in messages if isinstance(m, dict)]
+                await logger.ainfo(
+                    "mcp_request_methods",
+                    methods=methods,
+                    client=request.headers.get("user-agent", "")[:80],
+                )
+            except Exception:
+                await logger.ainfo("mcp_request_unparseable")
+        return await call_next(request)
+
+
 def create_application(
     settings: Settings | None = None,
     mcp_component: McpComponent | None = None,
@@ -60,6 +86,7 @@ def create_application(
         lifespan=lifespan,
     )
 
+    app.add_middleware(McpRequestLogMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
     if resolved_settings.allowed_origins:
