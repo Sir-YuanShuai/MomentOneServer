@@ -72,6 +72,7 @@ class Asset:
     checksum_sha256: str | None
     created_at: datetime
     ready_at: datetime | None
+    thumbnail_generated_at: datetime | None
     deleted_at: datetime | None
 
 

@@ -10,6 +10,8 @@
 未配置 S3 时返回 503 SERVICE_UNAVAILABLE。
 """
 
+import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -34,9 +36,15 @@ from app.infrastructure.storage.object_storage import (
     UploadIntent,
     get_object_storage,
 )
-from app.modules.assets.domain import AssetState, infer_kind
+from app.modules.assets.domain import AssetKind, AssetState, infer_kind
+from app.modules.assets.thumbnail import (
+    THUMBNAIL_CONTENT_TYPE,
+    generate_thumbnail,
+)
 
 router = APIRouter(prefix="/v1/assets", tags=["assets"])
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- 依赖 ----------
@@ -79,6 +87,31 @@ class _UnconfiguredStorage:
         raise AssertionError  # pragma: no cover
 
     def head_object(self, *, user_id: str, asset_id: str) -> ObjectMetadata:
+        self._raise()
+        raise AssertionError  # pragma: no cover
+
+    def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes:
+        self._raise()
+        raise AssertionError  # pragma: no cover
+
+    def put_thumbnail(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        data: bytes,
+        content_type: str,
+    ) -> None:
+        self._raise()
+        raise AssertionError  # pragma: no cover
+
+    def create_thumbnail_url(
+        self,
+        *,
+        user_id: str,
+        asset_id: str,
+        expires_in_seconds: int,
+    ) -> str:
         self._raise()
         raise AssertionError  # pragma: no cover
 
@@ -260,6 +293,27 @@ async def complete_upload(
             status_code=404,
         )
 
+    # 生成缩略图（仅 image 类）。失败只降级不影响上传成功——原图已 ready。
+    if asset.kind == AssetKind.IMAGE:
+        try:
+            generated = await asyncio.to_thread(
+                _generate_thumbnail, storage, str(user_id), str(asset.id)
+            )
+            if generated:
+                await repo.mark_thumbnail_ready(asset_uuid, user_id)
+                audit_repo = SqlAuditEventRepository(session)
+                await audit_repo.append(
+                    user_id=user_id,
+                    actor_type="web",
+                    actor_id=str(user_id),
+                    event_type="asset.thumbnail_generated",
+                    resource_type="asset",
+                    resource_id=asset.id,
+                    allowed=True,
+                )
+        except Exception as exc:
+            logger.warning("缩略图生成失败，已降级：asset_id=%s err=%s", asset.id, exc)
+
     audit_repo = SqlAuditEventRepository(session)
     await audit_repo.append(
         user_id=user_id,
@@ -345,6 +399,25 @@ async def create_download_url(
 
 
 # ---------- 工具 ----------
+
+
+def _generate_thumbnail(storage: ObjectStorage, user_id: str, asset_id: str) -> bool:
+    """从原图生成缩略图并写回对象存储（同步，供 asyncio.to_thread 调用）。
+
+    返回是否成功生成（图片损坏/像素超限返回 False，静默跳过）；
+    存储异常向上抛，由路由层捕获降级。
+    """
+    data = storage.get_object_bytes(user_id=user_id, asset_id=asset_id)
+    thumb = generate_thumbnail(data)
+    if thumb is None:
+        return False
+    storage.put_thumbnail(
+        user_id=user_id,
+        asset_id=asset_id,
+        data=thumb,
+        content_type=THUMBNAIL_CONTENT_TYPE,
+    )
+    return True
 
 
 def _parse_uuid(value: str) -> UUID:

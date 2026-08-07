@@ -382,6 +382,7 @@ class FakeAssetRepository:
             checksum_sha256=None,
             created_at=datetime.now(UTC),
             ready_at=None,
+            thumbnail_generated_at=None,
             deleted_at=None,
         )
         return self._store[asset_id]
@@ -409,6 +410,7 @@ class FakeAssetRepository:
             checksum_sha256=checksum_sha256,
             created_at=a.created_at,
             ready_at=datetime.now(UTC),
+            thumbnail_generated_at=a.thumbnail_generated_at,
             deleted_at=None,
         )
         return self._store[asset_id]
@@ -428,6 +430,7 @@ class FakeAssetRepository:
             checksum_sha256=a.checksum_sha256,
             created_at=a.created_at,
             ready_at=None,
+            thumbnail_generated_at=a.thumbnail_generated_at,
             deleted_at=None,
         )
         return self._store[asset_id]
