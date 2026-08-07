@@ -104,7 +104,7 @@ jobs:
 
       - name: Smoke-test MCP Apps UI resource in image
         run: >-
-          docker exec -e MOMENT_ONE_MCP_APPS_HTML_PATH=mcp_apps/bookkeeping/dist/bookkeeping.html
+          docker exec -e MOMENT_ONE_MCP_APPS_HTML_PATH=/app/mcp_apps/bookkeeping/dist/bookkeeping.html
           moment-one-server python -c
           "from app.core.config import Settings;
           from app.modules.mcp.endpoint import _load_apps_html;
