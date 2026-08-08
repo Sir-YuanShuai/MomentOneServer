@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,12 @@ from app.infrastructure.database.repositories.idempotency_repository import (
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp import tools as mcp_tools
+from app.modules.mcp.a2ui import (
+    A2UI_CATALOG_ID,
+    A2UI_MIME_TYPE,
+    A2UI_VERSION,
+    validate_a2ui_messages,
+)
 from app.modules.mcp.endpoint import McpComponent
 from app.modules.mcp.token_verifier import MomentTokenVerifier
 from app.modules.mcp_oauth.service import derive_code_challenge, generate_code_verifier
@@ -39,6 +46,18 @@ USER_ID = UUID("11111111-1111-4111-8111-111111111111")
 BINDING_ID = UUID("22222222-2222-4222-8222-222222222222")
 DEVICE_ID = "device-aaa-bbb-ccc"
 PROTOCOL_VERSION = "2025-06-18"
+A2UI_CAPABILITIES = {
+    "experimental": {
+        "a2ui": {
+            "clientCapabilities": {
+                A2UI_VERSION: {
+                    "supportedCatalogIds": [A2UI_CATALOG_ID],
+                    "inlineCatalogs": [],
+                }
+            }
+        }
+    }
+}
 
 MCP_HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -436,7 +455,12 @@ def _issue_mcp_token(
     return token
 
 
-async def _initialize(client: AsyncClient, token: str) -> str:
+async def _initialize_with_result(
+    client: AsyncClient,
+    token: str,
+    *,
+    capabilities: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
     resp = await client.post(
         "/mcp",
         json={
@@ -445,7 +469,7 @@ async def _initialize(client: AsyncClient, token: str) -> str:
             "method": "initialize",
             "params": {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": capabilities or {},
                 "clientInfo": {"name": "test-host", "version": "1.0"},
             },
         },
@@ -454,13 +478,22 @@ async def _initialize(client: AsyncClient, token: str) -> str:
     assert resp.status_code == 200, resp.text
     session_id = resp.headers.get("mcp-session-id")
     assert session_id
-    # notifications/initialized
+    payload = resp.json()
+    message = payload[0] if isinstance(payload, list) else payload
+    assert "result" in message, message
     resp2 = await client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "method": "notifications/initialized"},
         headers={**MCP_HEADERS, "Authorization": f"Bearer {token}", "Mcp-Session-Id": session_id},
     )
     assert resp2.status_code in (200, 202), resp2.text
+    return session_id, message["result"]
+
+
+async def _initialize(
+    client: AsyncClient, token: str, *, capabilities: dict[str, Any] | None = None
+) -> str:
+    session_id, _ = await _initialize_with_result(client, token, capabilities=capabilities)
     return session_id
 
 
@@ -528,6 +561,8 @@ async def test_mcp_list_tools_with_qr_binding_token(
         "habit_goal_create",
         "habit_checkin_create",
         "habit_progress",
+        "agent_plan",
+        "a2ui_action",
     } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
@@ -1365,3 +1400,241 @@ async def test_bookkeeping_plan_today_and_summary_custom_range(
         assert custom["period"] == "custom"
         assert custom["count"] >= 1
         assert custom["expense"] >= 18.8
+
+
+@pytest.mark.asyncio
+async def test_a2ui_initialize_and_session_capability(
+    app: FastAPI, fake_repos: dict[str, Any], tmp_path: Path
+) -> None:
+    """initialize 声明 Server 能力，Session 保存 experimental.a2ui 并影响后续结果。"""
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    now = datetime.now(UTC)
+    goal = HabitGoal(
+        id=UUID("33333333-3333-4333-8333-333333333333"),
+        user_id=USER_ID,
+        name="晨跑",
+        revision=1,
+        created_at=now,
+        updated_at=now,
+        unit="公里",
+        frequency="weekly",
+        times_per_week=5,
+    )
+    await fake_repos["habit"].create(goal)
+
+    async with _mcp_client(app) as client:
+        session_id, initialized = await _initialize_with_result(
+            client, token, capabilities=A2UI_CAPABILITIES
+        )
+        assert initialized["protocolVersion"] == PROTOCOL_VERSION
+        # 2025-06-18 的 wire schema 会筛掉 2026 才标准化的 extensions 字段；
+        # Session 仍会保留 experimental.a2ui，并用于后续 Tool Result 协商。
+        assert "extensions" not in initialized["capabilities"]
+
+        data = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 80,
+                "method": "tools/call",
+                "params": {
+                    "name": "habit_progress",
+                    "arguments": {"days": 7, "timezone": "Asia/Shanghai"},
+                },
+            },
+        )
+
+    result = data["result"]
+    assert result["structuredContent"]["goals"][0]["name"] == "晨跑"
+    assert any(item["type"] == "text" and item["text"] for item in result["content"])
+    resource = next(item for item in result["content"] if item["type"] == "resource")
+    assert resource["resource"]["mimeType"] == A2UI_MIME_TYPE
+    assert resource["annotations"]["audience"] == ["user"]
+    validate_a2ui_messages(json.loads(resource["resource"]["text"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        {},
+        {
+            "experimental": {
+                "a2ui": {
+                    "clientCapabilities": {
+                        A2UI_VERSION: {
+                            "supportedCatalogIds": ["https://example.invalid/catalog.json"]
+                        }
+                    }
+                }
+            }
+        },
+    ],
+)
+async def test_non_a2ui_clients_keep_text_and_structured_fallback(
+    app: FastAPI,
+    tmp_path: Path,
+    capabilities: dict[str, Any],
+) -> None:
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read",))
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token, capabilities=capabilities)
+        data = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "tools/call",
+                "params": {
+                    "name": "habit_progress",
+                    "arguments": {"days": 7, "timezone": "UTC"},
+                },
+            },
+        )
+    result = data["result"]
+    assert result["structuredContent"]["goals"] == []
+    assert [item["type"] for item in result["content"]] == ["text"]
+
+
+@pytest.mark.asyncio
+async def test_agent_plan_routes_registered_schema_valid_tools(
+    app: FastAPI, fake_repos: dict[str, Any], tmp_path: Path
+) -> None:
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    now = datetime.now(UTC)
+    goal = HabitGoal(
+        id=UUID("44444444-4444-4444-8444-444444444444"),
+        user_id=USER_ID,
+        name="晨跑",
+        revision=1,
+        created_at=now,
+        updated_at=now,
+        unit="公里",
+        frequency="weekly",
+        times_per_week=5,
+    )
+    await fake_repos["habit"].create(goal)
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+        listed = await _post(
+            client,
+            session_id,
+            token,
+            {"jsonrpc": "2.0", "id": 82, "method": "tools/list", "params": {}},
+        )
+        schemas = {tool["name"]: tool["inputSchema"] for tool in listed["result"]["tools"]}
+
+        async def plan(user_input: str, request_id: int) -> dict[str, Any]:
+            response = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": "agent_plan", "arguments": {"input": user_input}},
+                },
+            )
+            return response["result"]["structuredContent"]
+
+        cases = [
+            ("这个月花了多少", "bookkeeping_summary"),
+            ("记一笔午餐 28 元", "bookkeeping_create"),
+            ("搜索上次去杭州的记忆", "moments_search"),
+            ("查看我的习惯进度", "habit_progress"),
+            ("晨跑打卡 3 公里", "habit_checkin_create"),
+        ]
+        for index, (user_input, expected_tool) in enumerate(cases, start=83):
+            planned = await plan(user_input, index)
+            assert planned["toolName"] == expected_tool, planned
+            assert planned["toolName"] in schemas
+            from jsonschema import Draft202012Validator
+
+            assert not list(
+                Draft202012Validator(schemas[expected_tool]).iter_errors(planned["arguments"])
+            )
+            assert planned["toolName"] != "agent_plan"
+
+        unsupported = await plan("给我讲个笑话", 90)
+        assert unsupported["toolName"] == ""
+        assert unsupported["reply"]
+        insufficient = await plan("帮我记一笔午餐", 91)
+        assert insufficient["toolName"] == ""
+        assert "金额" in insufficient["reply"]
+
+
+@pytest.mark.asyncio
+async def test_agent_plan_scope_and_a2ui_action_whitelist(app: FastAPI, tmp_path: Path) -> None:
+    import sys
+
+    mod = sys.modules[__name__]  # type: ignore[assignment]
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read",))
+    moment_id = "55555555-5555-4555-8555-555555555555"
+    original_scope = mod.FAKE_AUTH_SCOPE  # type: ignore[attr-defined]
+    mod.FAKE_AUTH_SCOPE = "moments.read"  # type: ignore[attr-defined]
+    try:
+        async with _mcp_client(app) as client:
+            session_id = await _initialize(client, token)
+
+            async def call(name: str, arguments: dict[str, Any], request_id: int) -> dict:
+                return await _post(
+                    client,
+                    session_id,
+                    token,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
+                    },
+                )
+
+            denied = await call("agent_plan", {"input": "记一笔午餐 28 元"}, 92)
+            assert denied["result"]["structuredContent"]["toolName"] == ""
+            assert "moments.write" in denied["result"]["structuredContent"]["reply"]
+
+            opened = await call(
+                "a2ui_action",
+                {
+                    "name": "open_detail",
+                    "surfaceId": "moment-search-1",
+                    "context": {"momentId": moment_id},
+                },
+                93,
+            )
+            assert opened["result"]["structuredContent"]["toolName"] == "moments_get"
+
+            refreshed = await call(
+                "a2ui_action",
+                {
+                    "name": "refresh",
+                    "surfaceId": "habit-progress-1",
+                    "context": {"view": "habits"},
+                },
+                94,
+            )
+            assert refreshed["result"]["structuredContent"]["toolName"] == "habit_progress"
+
+            invalid = await call(
+                "a2ui_action",
+                {
+                    "name": "confirm",
+                    "surfaceId": "habit-progress-1",
+                    "context": {},
+                },
+                95,
+            )
+            assert invalid["result"]["isError"] is True
+            assert "confirm" in invalid["result"]["content"][0]["text"]
+    finally:
+        mod.FAKE_AUTH_SCOPE = original_scope  # type: ignore[attr-defined]

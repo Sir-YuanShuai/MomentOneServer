@@ -23,16 +23,21 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import tempfile
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import uvicorn
 from app.core.config import Settings
 from app.infrastructure.jwt.issuer import JwtIssuer
+from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp import tools as mcp_tools
+from app.modules.mcp.a2ui import A2UI_CATALOG_ID, A2UI_VERSION
 from app.modules.mcp.endpoint import McpComponent
 from app.modules.mcp.token_verifier import MomentTokenVerifier
 from fastapi import FastAPI
@@ -42,6 +47,7 @@ from test_mcp_server import (  # noqa: PLC2701  # 复用同目录测试 double
     USER_ID,
     FakeAuditRepository,
     FakeBindingSession,
+    FakeHabitGoalRepository,
     FakeIdempotencyRepository,
     FakeMomentRepository,
     FakeRevisionRepository,
@@ -69,7 +75,7 @@ async def _local_binding_session_factory() -> AsyncGenerator[FakeBindingSession]
 _local_binding_scope: tuple[str, ...] = tuple(s for s in DEFAULT_SCOPE.split() if s)
 
 
-def _make_settings(tmp_path: Path) -> Settings:
+def _make_settings(tmp_path: Path, *, port: int) -> Settings:
     priv_path, pub_path = _generate_rsa_keypair(tmp_path)
     return Settings(
         env="test",
@@ -82,7 +88,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         refresh_token_ttl_seconds=90 * 24 * 3600,
         binding_code_ttl_seconds=300,
         binding_code_length=24,
-        mcp_base_url=f"http://127.0.0.1:{DEFAULT_PORT}",
+        mcp_base_url=f"http://127.0.0.1:{port}",
         mcp_apps_html_path=None,
     )
 
@@ -96,12 +102,14 @@ def _install_fake_repos(fake_repos: dict[str, Any]) -> dict[str, Any]:
             "SqlIdempotencyRepository",
             "SqlAuditEventRepository",
             "SqlMomentRevisionRepository",
+            "SqlHabitGoalRepository",
         )
     }
     mcp_tools.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     mcp_tools.SqlIdempotencyRepository = lambda session: fake_repos["idempotency"]  # type: ignore[assignment]
     mcp_tools.SqlAuditEventRepository = lambda session: fake_repos["audit"]  # type: ignore[assignment]
     mcp_tools.SqlMomentRevisionRepository = lambda session: fake_repos["revision"]  # type: ignore[assignment]
+    mcp_tools.SqlHabitGoalRepository = lambda session: fake_repos["habit"]  # type: ignore[assignment]
     return original
 
 
@@ -130,17 +138,32 @@ def main() -> None:
     _local_binding_scope = binding_scope
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        settings = _make_settings(Path(tmp_dir))
+        settings = _make_settings(Path(tmp_dir), port=args.port)
 
         verifier = MomentTokenVerifier(
             settings,
             session_factory=lambda: _local_binding_session_factory(),  # type: ignore[arg-type]
         )
+        habit_repo = FakeHabitGoalRepository()
+        now = datetime.now(UTC)
+        goal = HabitGoal(
+            id=UUID("33333333-3333-4333-8333-333333333333"),
+            user_id=USER_ID,
+            name="晨跑",
+            revision=1,
+            created_at=now,
+            updated_at=now,
+            unit="公里",
+            frequency="weekly",
+            times_per_week=5,
+        )
+        asyncio.run(habit_repo.create(goal))
         fake_repos: dict[str, Any] = {
             "moment": FakeMomentRepository(),
             "idempotency": FakeIdempotencyRepository(),
             "audit": FakeAuditRepository(),
             "revision": FakeRevisionRepository(),
+            "habit": habit_repo,
         }
         original = _install_fake_repos(fake_repos)
 
@@ -162,6 +185,9 @@ def main() -> None:
         print(f"MCP_VERIFY_TOKEN={token}")
         print(f"MCP_VERIFY_URL=http://127.0.0.1:{args.port}/mcp")
         print(f"MCP_VERIFY_BINDING_ID={BINDING_ID}", flush=True)
+        print("MCP_VERIFY_A2UI_CAPABILITY=capabilities.experimental.a2ui")
+        print(f"MCP_VERIFY_A2UI_VERSION={A2UI_VERSION}")
+        print(f"MCP_VERIFY_A2UI_CATALOG={A2UI_CATALOG_ID}", flush=True)
 
         @asynccontextmanager
         async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:

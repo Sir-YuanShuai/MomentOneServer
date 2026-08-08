@@ -165,9 +165,10 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
-| MCP Server | `app/modules/mcp/`（server/tools/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；通用 Moment 创建/列表/搜索/计数/详情；每日回顾；习惯目标/打卡/进度；工具级 Scope + 审计） |
+| MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；通用 Moment 创建/列表/搜索/计数/详情；每日回顾；习惯目标/打卡/进度；`agent_plan`；`a2ui_action`；工具级 Scope + 审计；A2UI v0.9 自动化测试与 MomentOneGlasses 实际客户端连接 standalone 联调已通过，待真机 AIUI 页面联调后提交/部署） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
 | MCP Apps UI | `mcp_apps/bookkeeping/`（Vite 多入口单文件构建，`@modelcontextprotocol/ext-apps`） | 已实现 3 个紧凑结果卡：`bookkeeping` / `timeline` / `habits`；卡片只渲染本次 tool 的 structuredContent，不在 UI 内提供搜索表单或主动拉取数据 |
+| A2UI over MCP | `app/modules/mcp/a2ui.py` + `contracts/a2ui/` | 已实现 Server 侧 v0.9 capability negotiation、官方 Schema/Catalog 固定、9 个紧凑结果卡 builder、校验失败文本降级与标准 Tool Result fixture；实际眼镜客户端代码 standalone 联调已通过，未提交/未部署，等待真机 AIUI 页面联调 |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
 | Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）） |
@@ -197,6 +198,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | OAuth Token API 测试 | `tests/api/test_oauth_token.py` | 已实现 |
 | Moments API 测试 | `tests/api/test_moments_api.py` | 已实现（含 assetIds 关联 + media 响应 + type/payload 校验与过滤） |
 | 内置记录类型单测 | `tests/unit/test_moment_types.py` | 已实现（bookkeeping / habit / general 校验） |
+| A2UI / Planner 测试 | `tests/unit/test_a2ui.py` + `tests/api/test_mcp_server.py` | 已实现（capability namespace/session、Schema、fixture、降级、Tool Result、`agent_plan`、`a2ui_action`、Scope 与 MCP Apps 回归） |
 | 习惯目标 API 测试 | `tests/api/test_habit_goals_api.py` | 已实现（CRUD + revision 冲突 + 两阶段删除） |
 | 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
 | Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 创建/更新媒体集成 + 附件替换/保留/清空 + 缩略图生成/降级/URL 签发） |

@@ -16,6 +16,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
+from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport
 from app.modules.mcp.tools import McpCallContext, err_result
 
 logger = structlog.get_logger()
@@ -37,6 +38,8 @@ class McpToolEnv:
     async def call(
         self,
         fn: Callable[[McpCallContext], Awaitable[object]],
+        *,
+        a2ui_support: A2UISupport = A2UI_DISABLED,
     ) -> object:
         """执行一次工具调用：提取身份 → 开 session → 执行 → 提交。
 
@@ -69,6 +72,7 @@ class McpToolEnv:
                 actor_id=actor_id,
                 request_id=str(uuid4()),
                 session=session,
+                a2ui=a2ui_support,
             )
             try:
                 result = await fn(ctx)

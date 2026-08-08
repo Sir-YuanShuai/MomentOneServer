@@ -9,16 +9,18 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server.apps import Apps
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from pydantic import Field
 
 from app.modules.mcp import tools
+from app.modules.mcp.a2ui import A2UIExtension, negotiate_a2ui
 from app.modules.mcp.deps import McpToolEnv
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,11 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "habit_goal_create": "创建一个每日或每周习惯目标，需要 moments.write。",
     "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
     "habit_progress": "返回习惯目标在最近若干天的完成情况、今日状态与连续天数。",
+    "agent_plan": (
+        "把用户完整原话规划为一个当前已注册、参数合法且 Scope 允许的真实 MCP Tool。"
+        "只返回 toolName/arguments/reply，不直接伪造业务结果。"
+    ),
+    "a2ui_action": "处理 A2UI 白名单只读 Action，返回后续真实 Tool 计划，不直接执行任意工具。",
 }
 
 # 远程提示词：眼镜端 LanguageModel 的记账助手指令（工具与提示词均由远程提供，
@@ -104,6 +111,14 @@ def _load_bookkeeping_prompt() -> str:
     except OSError:
         pass
     return _BOOKKEEPING_PROMPT_FALLBACK
+
+
+async def _call_with_a2ui(
+    env: McpToolEnv,
+    mcp_ctx: Context,
+    fn: Callable[[tools.McpCallContext], Awaitable[object]],
+) -> object:
+    return await env.call(fn, a2ui_support=negotiate_a2ui(mcp_ctx.client_capabilities))
 
 
 def build_mcp_server(
@@ -157,7 +172,7 @@ def build_mcp_server(
         title="Moment One MCP Server",
         description="Moment One 个人生活记忆系统：记录、搜索、回顾、记账与习惯工具。",
         version="0.2.0",
-        extensions=[apps],
+        extensions=[apps, A2UIExtension()],
         token_verifier=token_verifier,
         auth=auth,
     )
@@ -165,6 +180,8 @@ def build_mcp_server(
     # 非 Apps 绑定工具在 server 构造后注册
     _register_bookkeeping_plan(server, env)
     _register_moments_count(server, env)
+    _register_agent_plan(server, env)
+    _register_a2ui_action(server, env)
     _register_bookkeeping_prompt(server)
 
     return server
@@ -224,6 +241,7 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
         title="记一笔账",
     )
     async def bookkeeping_create(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         amount: Annotated[float, Field(ge=0, le=9999999, description="金额（0 ~ 9999999）")],
         flow: Annotated[
             Literal["expense", "income"], Field(description="流向：expense=支出，income=收入")
@@ -261,7 +279,9 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
             Field(default=None, max_length=20, description="标题（可选，默认取分类/商家）"),
         ] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.bookkeeping_create(
                 ctx,
                 amount=amount,
@@ -276,7 +296,7 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
                 count_in_budget=countInBudget,
                 idempotency_key=idempotencyKey,
                 title=title,
-            )
+            ),
         )
 
 
@@ -293,6 +313,7 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
         title="记账记录列表",
     )
     async def bookkeeping_list(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         limit: Annotated[int, Field(default=20, ge=1, le=20, description="每页数量（≤20）")] = 20,
         cursor: Annotated[
             str | None, Field(default=None, description="不透明分页游标（上页 nextCursor）")
@@ -306,7 +327,9 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
             str | None, Field(default=None, description="按账本过滤（payload.ledger）")
         ] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.bookkeeping_list(
                 ctx,
                 limit=limit,
@@ -315,7 +338,7 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
                 to=to,
                 category=category,
                 ledger=ledger,
-            )
+            ),
         )
 
 
@@ -332,6 +355,7 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
         title="记账统计",
     )
     async def bookkeeping_summary(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         period: Annotated[
             str,
             Field(
@@ -359,7 +383,9 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
             Field(default=None, description="自定义范围结束（ISO-8601，开区间）"),
         ] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.bookkeeping_summary(
                 ctx,
                 period=period,
@@ -369,7 +395,7 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
                 category=category,
                 from_=from_,
                 to=to,
-            )
+            ),
         )
 
 
@@ -386,6 +412,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="浏览记忆时间线",
     )
     async def moments_list(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         limit: Annotated[int, Field(default=20, ge=1, le=20)] = 20,
         cursor: Annotated[str | None, Field(default=None, description="上一页 nextCursor")] = None,
         type: Annotated[
@@ -396,7 +423,9 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         from_: Annotated[str | None, Field(default=None, description="开始时间 ISO-8601")] = None,
         to: Annotated[str | None, Field(default=None, description="结束时间 ISO-8601")] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.moments_list(
                 ctx,
                 limit=limit,
@@ -406,7 +435,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 tag=tag,
                 from_=from_,
                 to=to,
-            )
+            ),
         )
 
     @apps.tool(
@@ -416,6 +445,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="搜索记忆",
     )
     async def moments_search(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         query: Annotated[str, Field(min_length=1, description="搜索词或短语")],
         limit: Annotated[int, Field(default=20, ge=1, le=20)] = 20,
         type: Annotated[str | None, Field(default=None, description="记录类型过滤")] = None,
@@ -423,7 +453,9 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         from_: Annotated[str | None, Field(default=None, description="开始时间 ISO-8601")] = None,
         to: Annotated[str | None, Field(default=None, description="结束时间 ISO-8601")] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.moments_search(
                 ctx,
                 query=query,
@@ -432,7 +464,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 category=category,
                 from_=from_,
                 to=to,
-            )
+            ),
         )
 
     @apps.tool(
@@ -442,6 +474,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="每日回顾",
     )
     async def reviews_daily(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         date: Annotated[
             str | None, Field(default=None, description="日期 YYYY-MM-DD；默认今天")
         ] = None,
@@ -449,8 +482,8 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
             str | None, Field(default=None, description="IANA 时区，如 Asia/Shanghai")
         ] = None,
     ) -> object:
-        return await env.call(
-            lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone)
+        return await _call_with_a2ui(
+            env, mcp_ctx, lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone)
         )
 
     @apps.tool(
@@ -460,9 +493,12 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="查看 Moment 详情",
     )
     async def moments_get(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         momentId: Annotated[str, Field(description="Moment ID（UUID）")],
     ) -> object:
-        return await env.call(lambda ctx: tools.moments_get(ctx, moment_id=momentId))
+        return await _call_with_a2ui(
+            env, mcp_ctx, lambda ctx: tools.moments_get(ctx, moment_id=momentId)
+        )
 
     @apps.tool(
         resource_uri=TIMELINE_UI_URI,
@@ -514,11 +550,12 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="查看习惯进度",
     )
     async def habit_progress(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         days: Annotated[int, Field(default=7, ge=7, le=31)] = 7,
         timezone: Annotated[str | None, Field(default=None, description="IANA 时区")] = None,
     ) -> object:
-        return await env.call(
-            lambda ctx: tools.habit_progress(ctx, days=days, timezone_name=timezone)
+        return await _call_with_a2ui(
+            env, mcp_ctx, lambda ctx: tools.habit_progress(ctx, days=days, timezone_name=timezone)
         )
 
     @apps.tool(
@@ -563,6 +600,7 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="习惯打卡",
     )
     async def habit_checkin_create(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
         goalId: Annotated[str, Field(description="习惯目标 UUID")],
         idempotencyKey: Annotated[str, Field(min_length=8)],
         done: Annotated[bool, Field(default=True)] = True,
@@ -571,7 +609,9 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         timezone: Annotated[str, Field(default="UTC")] = "UTC",
         note: Annotated[str | None, Field(default=None, max_length=240)] = None,
     ) -> object:
-        return await env.call(
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
             lambda ctx: tools.habit_checkin_create(
                 ctx,
                 goal_id=goalId,
@@ -581,7 +621,7 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 timezone_name=timezone,
                 note=note,
                 idempotency_key=idempotencyKey,
-            )
+            ),
         )
 
 
@@ -604,6 +644,52 @@ def _register_moments_count(server: MCPServer, env: McpToolEnv) -> None:
                 category=category,
                 from_=from_,
                 to=to,
+            )
+        )
+
+
+def _registered_tool_schemas(server: MCPServer) -> dict[str, dict]:
+    return {
+        tool.name: tool.parameters
+        for tool in server._tool_manager.list_tools()  # pyright: ignore[reportPrivateUsage]
+    }
+
+
+def _register_agent_plan(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="agent_plan",
+        description=_TOOL_DESCRIPTIONS["agent_plan"],
+        title="通用工具规划",
+    )
+    async def agent_plan(  # pyright: ignore[reportUnusedFunction]
+        input: Annotated[str, Field(min_length=1, description="用户完整原话")],
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.agent_plan(
+                ctx,
+                input=input,
+                tool_schemas=_registered_tool_schemas(server),
+            )
+        )
+
+
+def _register_a2ui_action(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="a2ui_action",
+        description=_TOOL_DESCRIPTIONS["a2ui_action"],
+        title="A2UI Action",
+    )
+    async def a2ui_action(  # pyright: ignore[reportUnusedFunction]
+        name: Annotated[Literal["open_detail", "refresh"], Field(description="白名单 Action")],
+        context: Annotated[dict, Field(default_factory=dict, description="Action 上下文")],
+        surfaceId: Annotated[str, Field(min_length=1, max_length=120)],
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.a2ui_action(
+                ctx,
+                name=name,
+                context=context,
+                surface_id=surfaceId,
             )
         )
 
