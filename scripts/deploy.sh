@@ -35,15 +35,24 @@ ssh -p "${SERVER_PORT}" "${SERVER_USER}@${SERVER_HOST}" "
   set -euo pipefail
   cd '${SERVER_DEPLOY_PATH}'
   echo '==> Pulling latest image'
-  docker compose -f compose.prod.yml pull api
+  for attempt in 1 2 3 4 5; do
+    if docker compose -f compose.prod.yml pull api; then
+      break
+    fi
+    if [ \$attempt -eq 5 ]; then
+      echo '==> Image pull failed after 5 attempts'
+      exit 1
+    fi
+    echo '==> Image pull failed; retrying in 10s'
+    sleep 10
+  done
   echo '==> Applying database migrations'
   docker compose -f compose.prod.yml run --rm api alembic upgrade head
   echo '==> Restarting api container'
   docker compose -f compose.prod.yml up -d api
   echo '==> Health check'
   for attempt in \$(seq 1 30); do
-    if curl --fail --silent --show-error http://127.0.0.1:8000/healthz; then
-      echo
+    if docker compose -f compose.prod.yml exec -T api python -c \"import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)); assert data.get('status') == 'ok', data\"; then
       echo '==> Deployment healthy'
       exit 0
     fi
