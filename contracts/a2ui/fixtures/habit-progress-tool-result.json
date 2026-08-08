@@ -1,0 +1,46 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "晨跑最近 7 天完成 3 次，连续 2 天。"
+    },
+    {
+      "type": "resource",
+      "resource": {
+        "uri": "a2ui://moment-one/habit-progress-fixture0",
+        "mimeType": "application/a2ui+json",
+        "text": "[{\"version\":\"v0.9\",\"createSurface\":{\"surfaceId\":\"habit-progress-fixture0\",\"catalogId\":\"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json\"}},{\"version\":\"v0.9\",\"updateDataModel\":{\"surfaceId\":\"habit-progress-fixture0\",\"path\":\"/\",\"value\":{\"heading\":\"习惯进度\",\"meta\":\"最近 7 天 · 1 个目标\",\"row0Title\":\"晨跑\",\"row0Detail\":\"3/5 次\"}}},{\"version\":\"v0.9\",\"updateComponents\":{\"surfaceId\":\"habit-progress-fixture0\",\"components\":[{\"id\":\"root\",\"component\":\"Column\",\"children\":[\"heading\",\"meta\",\"row0\"]},{\"id\":\"heading\",\"component\":\"Text\",\"text\":{\"path\":\"/heading\"},\"variant\":\"h3\"},{\"id\":\"meta\",\"component\":\"Text\",\"text\":{\"path\":\"/meta\"},\"variant\":\"caption\"},{\"id\":\"row0\",\"component\":\"Row\",\"children\":[\"row0Title\",\"row0Detail\"],\"justify\":\"spaceBetween\",\"align\":\"center\"},{\"id\":\"row0Title\",\"component\":\"Text\",\"text\":{\"path\":\"/row0Title\"},\"variant\":\"body\"},{\"id\":\"row0Detail\",\"component\":\"Text\",\"text\":{\"path\":\"/row0Detail\"},\"variant\":\"caption\"}]}}]"
+      },
+      "annotations": {
+        "audience": [
+          "user"
+        ],
+        "priority": 1.0
+      }
+    }
+  ],
+  "structuredContent": {
+    "schemaVersion": "1.0",
+    "view": "habits",
+    "timezone": "Asia/Shanghai",
+    "from": "2026-08-02",
+    "to": "2026-08-08",
+    "days": 7,
+    "goals": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "name": "晨跑",
+        "unit": "公里",
+        "frequency": "weekly",
+        "timesPerWeek": 5,
+        "todayDone": true,
+        "completedDays": 3,
+        "currentStreak": 2,
+        "days": []
+      }
+    ],
+    "total": 1
+  },
+  "isError": false,
+  "resultType": "complete"
+}

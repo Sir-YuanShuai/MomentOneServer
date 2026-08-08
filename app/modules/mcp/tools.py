@@ -16,9 +16,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from jsonschema import Draft202012Validator, FormatChecker
 from mcp.types import CallToolResult, TextContent
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +42,7 @@ from app.infrastructure.database.repositories.moment_revision_repository import 
     SqlMomentRevisionRepository,
 )
 from app.modules.habit_goals.domain import HabitGoal
+from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport, build_a2ui_result, build_text_summary
 from app.modules.mcp.scope import has_scope
 from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
@@ -77,6 +80,7 @@ class McpCallContext:
     actor_id: str | None
     request_id: str
     session: AsyncSession
+    a2ui: A2UISupport = A2UI_DISABLED
 
     def require_scope(self, required: str) -> None:
         if not has_scope(self.scopes, required):
@@ -100,6 +104,16 @@ def _text_result(data: dict) -> CallToolResult:
     return CallToolResult(
         content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False, indent=2))],
         structured_content=data,
+    )
+
+
+def _tool_result(ctx: McpCallContext, tool_name: str, data: dict) -> CallToolResult:
+    return build_a2ui_result(
+        support=ctx.a2ui,
+        tool_name=tool_name,
+        request_id=ctx.request_id,
+        structured_content=data,
+        text=build_text_summary(tool_name, data),
     )
 
 
@@ -357,7 +371,7 @@ async def bookkeeping_create(
                 status_code=409,
             )
         if idem_record.state == "completed" and idem_record.response_body is not None:
-            return _text_result(idem_record.response_body)
+            return _tool_result(ctx, "bookkeeping_create", idem_record.response_body)
 
     moment = Moment(
         id=uuid4(),
@@ -439,7 +453,7 @@ async def bookkeeping_create(
             resource_id=created.id,
         )
 
-    return _text_result(response)
+    return _tool_result(ctx, "bookkeeping_create", response)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +513,7 @@ async def bookkeeping_list(
         },
     )
 
-    return _text_result(result)
+    return _tool_result(ctx, "bookkeeping_list", result)
 
 
 # ---------------------------------------------------------------------------
@@ -650,7 +664,7 @@ async def bookkeeping_summary(
         },
     )
 
-    return _text_result(result)
+    return _tool_result(ctx, "bookkeeping_summary", result)
 
 
 # ---------------------------------------------------------------------------
@@ -871,7 +885,7 @@ async def moments_get(
         metadata={"tool": "moments_get", "scopes": list(ctx.scopes)},
     )
 
-    return _text_result(result)
+    return _tool_result(ctx, "moments_get", result)
 
 
 def _parse_optional_datetime(value: str, name: str) -> datetime:
@@ -1118,7 +1132,7 @@ async def moments_list(
         },
     }
     await _append_tool_audit(ctx, tool="moments_list", result_count=len(items))
-    return _text_result(result)
+    return _tool_result(ctx, "moments_list", result)
 
 
 async def moments_search(
@@ -1186,7 +1200,7 @@ async def moments_search(
         result_count=len(visible),
         metadata={"queryLength": len(query)},
     )
-    return _text_result(result)
+    return _tool_result(ctx, "moments_search", result)
 
 
 async def moments_count(
@@ -1260,7 +1274,7 @@ async def reviews_daily(
         ),
     }
     await _append_tool_audit(ctx, tool="reviews_daily", result_count=len(moments))
-    return _text_result(result)
+    return _tool_result(ctx, "reviews_daily", result)
 
 
 # ---------------------------------------------------------------------------
@@ -1454,15 +1468,14 @@ async def habit_checkin_create(
         resource_id=created.id,
         metadata={"goalId": goal_id, "done": done, "replayed": replayed},
     )
-    return _text_result(
-        {
-            "schemaVersion": SCHEMA_VERSION,
-            "created": not replayed,
-            "replayed": replayed,
-            "goal": _habit_goal_item(goal),
-            "checkin": _moment_item(created),
-        }
-    )
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "created": not replayed,
+        "replayed": replayed,
+        "goal": _habit_goal_item(goal),
+        "checkin": _moment_item(created),
+    }
+    return _tool_result(ctx, "habit_checkin_create", result)
 
 
 async def habit_progress(
@@ -1525,6 +1538,251 @@ async def habit_progress(
         "total": len(goal_items),
     }
     await _append_tool_audit(ctx, tool="habit_progress", result_count=len(goal_items))
+    return _tool_result(ctx, "habit_progress", result)
+
+
+# ---------------------------------------------------------------------------
+# 通用工具规划与 A2UI Action
+# ---------------------------------------------------------------------------
+
+_TOOL_SCOPE: dict[str, str] = {
+    "bookkeeping_create": "moments.write",
+    "bookkeeping_list": "moments.read",
+    "bookkeeping_summary": "moments.read",
+    "moments_create": "moments.write",
+    "moments_list": "moments.read",
+    "moments_search": "moments.read",
+    "moments_count": "moments.read",
+    "moments_get": "moments.read",
+    "reviews_daily": "moments.read",
+    "habit_goals_list": "moments.read",
+    "habit_goal_create": "moments.write",
+    "habit_checkin_create": "moments.write",
+    "habit_progress": "moments.read",
+    "a2ui_action": "moments.read",
+}
+
+
+def _plan_none(reply: str) -> CallToolResult:
+    return _text_result({"toolName": "", "arguments": {}, "reply": reply})
+
+
+def _validate_planned_tool(
+    ctx: McpCallContext,
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    tool_schemas: dict[str, dict],
+) -> CallToolResult:
+    if tool_name == "agent_plan" or tool_name not in tool_schemas:
+        return _plan_none("当前服务端没有可安全执行的对应工具。")
+    required_scope = _TOOL_SCOPE.get(tool_name)
+    if required_scope and not has_scope(ctx.scopes, required_scope):
+        return _plan_none(f"当前授权缺少 {required_scope}，无法执行这个操作。")
+    validator = Draft202012Validator(
+        tool_schemas[tool_name],
+        format_checker=FormatChecker(),
+    )
+    errors = sorted(validator.iter_errors(arguments), key=lambda error: list(error.path))
+    if errors:
+        return _plan_none(f"还需要补充信息：{errors[0].message}")
+    return _text_result({"toolName": tool_name, "arguments": arguments, "reply": ""})
+
+
+def _extract_moment_query(text: str) -> str:
+    query = re.sub(r"^(帮我|请|查找|搜索|找一下|找找|看看|查看)", "", text).strip()
+    query = re.sub(r"(的)?(记忆|记录|Moment|moment)$", "", query).strip()
+    return query
+
+
+async def agent_plan(
+    ctx: McpCallContext,
+    *,
+    input: str,
+    tool_schemas: dict[str, dict],
+) -> CallToolResult:
+    """把用户原话规划为一个当前已注册、参数合法且 Scope 允许的 MCP Tool。"""
+    text = str(input or "").strip()
+    if not text:
+        return _plan_none("请告诉我你想记录或查询什么。")
+    now = datetime.now(UTC)
+
+    if re.search(r"花了多少|用了多少|收支|结余|开销|账单统计|支出.*多少|收入.*多少", text):
+        period = _resolve_period(text, now)
+        arguments: dict[str, Any] = {"period": period["period"]}
+        if period.get("from") is not None:
+            arguments["from_"] = period["from"]
+            arguments["to"] = period["to"]
+        if period.get("year") is not None:
+            arguments["year"] = period["year"]
+        if period.get("month") is not None:
+            arguments["month"] = period["month"]
+        return _validate_planned_tool(
+            ctx,
+            tool_name="bookkeeping_summary",
+            arguments=arguments,
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"记(?:一笔|账)|花了|消费|支出|收入|赚了|入账", text):
+        create_arguments = _resolve_create(text, now)
+        if create_arguments is None:
+            return _plan_none("请补充金额，例如“记一笔午餐 28 元”。")
+        arguments = dict(create_arguments)
+        return _validate_planned_tool(
+            ctx,
+            tool_name="bookkeeping_create",
+            arguments=arguments,
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"账单|流水|消费记录|收支明细|账目明细", text):
+        return _validate_planned_tool(
+            ctx,
+            tool_name="bookkeeping_list",
+            arguments={"limit": 20},
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"打卡|完成了", text):
+        goals = await SqlHabitGoalRepository(ctx.session).list_by_user(ctx.user_id)
+        matches = [goal for goal in goals if goal.name in text]
+        if len(matches) != 1:
+            names = "、".join(goal.name for goal in goals[:5])
+            return _plan_none(f"请说明要打卡的习惯。当前习惯：{names or '暂无习惯目标'}。")
+        goal = matches[0]
+        count_match = re.search(r"(\d+)\s*(?:次|分钟|公里|杯)?", text)
+        arguments = {
+            "goalId": str(goal.id),
+            "done": True,
+            "timezone": "UTC",
+            "idempotencyKey": str(uuid4()),
+        }
+        if count_match:
+            arguments["count"] = int(count_match.group(1))
+        return _validate_planned_tool(
+            ctx,
+            tool_name="habit_checkin_create",
+            arguments=arguments,
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"习惯.*(进度|完成|情况)|查看.*习惯|我的习惯", text):
+        return _validate_planned_tool(
+            ctx,
+            tool_name="habit_progress",
+            arguments={"days": 7, "timezone": "UTC"},
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"习惯目标|有哪些习惯", text):
+        return _validate_planned_tool(
+            ctx,
+            tool_name="habit_goals_list",
+            arguments={},
+            tool_schemas=tool_schemas,
+        )
+
+    moment_id = re.search(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+        text,
+    )
+    if moment_id and re.search(r"查看|详情|这条", text):
+        return _validate_planned_tool(
+            ctx,
+            tool_name="moments_get",
+            arguments={"momentId": moment_id.group(0)},
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"最近.*(记录|Moment|记忆)|列出.*(记录|Moment|记忆)|时间线", text):
+        return _validate_planned_tool(
+            ctx,
+            tool_name="moments_list",
+            arguments={"limit": 10},
+            tool_schemas=tool_schemas,
+        )
+
+    if re.search(r"搜索|查找|找一下|哪次|什么时候|关于.*(记忆|记录)", text):
+        query = _extract_moment_query(text)
+        if not query:
+            return _plan_none("请补充要搜索的关键词。")
+        return _validate_planned_tool(
+            ctx,
+            tool_name="moments_search",
+            arguments={"query": query, "limit": 10},
+            tool_schemas=tool_schemas,
+        )
+
+    return _plan_none(
+        "暂时无法确定要调用哪个工具。可以尝试记账、查询 Moment、查看习惯进度或习惯打卡。"
+    )
+
+
+async def a2ui_action(
+    ctx: McpCallContext,
+    *,
+    name: str,
+    context: dict,
+    surface_id: str,
+) -> CallToolResult:
+    """把白名单 A2UI 只读 Action 转换为后续真实 Tool 计划，不直接执行。"""
+    ctx.require_scope("moments.read")
+    if not surface_id or len(surface_id) > 120:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="surfaceId 无效。",
+            status_code=400,
+        )
+    if name == "open_detail":
+        moment_id = context.get("momentId")
+        try:
+            UUID(str(moment_id))
+        except (ValueError, TypeError) as exc:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="open_detail 需要合法的 momentId。",
+                status_code=400,
+            ) from exc
+        result = {
+            "accepted": True,
+            "name": name,
+            "surfaceId": surface_id,
+            "toolName": "moments_get",
+            "arguments": {"momentId": str(moment_id)},
+        }
+    elif name == "refresh":
+        view = context.get("view")
+        refresh_map: dict[str, tuple[str, dict[str, Any]]] = {
+            "timeline": ("moments_list", {"limit": 10}),
+            "habits": ("habit_progress", {"days": 7, "timezone": "UTC"}),
+            "bookkeeping": ("bookkeeping_summary", {"period": "month"}),
+        }
+        if view not in refresh_map:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="refresh view 不在白名单中。",
+                status_code=400,
+            )
+        tool_name, arguments = refresh_map[str(view)]
+        result = {
+            "accepted": True,
+            "name": name,
+            "surfaceId": surface_id,
+            "toolName": tool_name,
+            "arguments": arguments,
+        }
+    else:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="A2UI Action 不在白名单中。",
+            status_code=400,
+        )
+    await _append_tool_audit(
+        ctx,
+        tool="a2ui_action",
+        metadata={"action": name, "surfaceId": surface_id},
+    )
     return _text_result(result)
 
 
@@ -1544,5 +1802,7 @@ __all__ = [
     "habit_goal_create",
     "habit_checkin_create",
     "habit_progress",
+    "agent_plan",
+    "a2ui_action",
     "err_result",
 ]
