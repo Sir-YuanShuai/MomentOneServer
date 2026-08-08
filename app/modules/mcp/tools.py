@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from mcp.types import CallToolResult, TextContent
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ApplicationError
 from app.infrastructure.database.repositories.audit_event_repository import (
     SqlAuditEventRepository,
+)
+from app.infrastructure.database.repositories.habit_goal_repository import (
+    SqlHabitGoalRepository,
 )
 from app.infrastructure.database.repositories.idempotency_repository import (
     SqlIdempotencyRepository,
@@ -35,6 +39,7 @@ from app.infrastructure.database.repositories.moment_repository import (
 from app.infrastructure.database.repositories.moment_revision_repository import (
     SqlMomentRevisionRepository,
 )
+from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp.scope import has_scope
 from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
@@ -166,6 +171,112 @@ def _bookkeeping_item(moment: Moment) -> dict:
         "occurredAt": moment.occurred_at.isoformat(),
         "revision": moment.revision,
     }
+
+
+def _moment_item(moment: Moment, *, detail: bool = False) -> dict:
+    """MCP Apps 使用的稳定 Moment 摘要；detail=True 时补充正文与来源信息。"""
+    item: dict = {
+        "id": str(moment.id),
+        "title": moment.title,
+        "description": moment.description,
+        "category": moment.category.value,
+        "type": moment.moment_type,
+        "tags": list(moment.tags),
+        "persons": list(moment.persons),
+        "event": moment.event,
+        "occurredAt": moment.occurred_at.isoformat(),
+        "timezone": moment.timezone,
+        "revision": moment.revision,
+    }
+    if moment.moment_type != "general" or detail:
+        item["payload"] = moment.payload
+    if detail:
+        item.update(
+            {
+                "voiceInput": moment.voice_input,
+                "aiSummary": moment.ai_summary,
+                "location": (
+                    {
+                        "name": moment.location.name,
+                        "latitude": moment.location.latitude,
+                        "longitude": moment.location.longitude,
+                        "source": moment.location.source.value,
+                    }
+                    if moment.location
+                    else None
+                ),
+                "emotion": (
+                    {
+                        "label": moment.emotion.label,
+                        "valence": moment.emotion.valence,
+                        "arousal": moment.emotion.arousal,
+                    }
+                    if moment.emotion
+                    else None
+                ),
+                "provenance": moment.provenance.to_dict() if moment.provenance else None,
+                "createdAt": moment.created_at.isoformat(),
+                "updatedAt": moment.updated_at.isoformat(),
+            }
+        )
+    return item
+
+
+def _parse_timezone(value: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(value or "UTC")
+    except ZoneInfoNotFoundError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="timezone 不是合法的 IANA 时区。",
+            status_code=400,
+            details={"timezone": value},
+        ) from exc
+
+
+def _day_bounds(day: str | None, timezone_name: str | None) -> tuple[datetime, datetime, date]:
+    zone = _parse_timezone(timezone_name)
+    if day:
+        try:
+            local_day = date.fromisoformat(day)
+        except ValueError as exc:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="date 必须是 YYYY-MM-DD。",
+                status_code=400,
+                details={"date": day},
+            ) from exc
+    else:
+        local_day = datetime.now(zone).date()
+    start = datetime.combine(local_day, time.min, tzinfo=zone).astimezone(UTC)
+    end = datetime.combine(local_day + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
+    return start, end, local_day
+
+
+async def _append_tool_audit(
+    ctx: McpCallContext,
+    *,
+    tool: str,
+    result_count: int | None = None,
+    resource_id: UUID | None = None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    details: dict[str, object] = {"tool": tool, "scopes": list(ctx.scopes)}
+    if result_count is not None:
+        details["resultCount"] = result_count
+    if metadata:
+        details.update(metadata)
+    await SqlAuditEventRepository(ctx.session).append(
+        user_id=ctx.user_id,
+        actor_type="mcp",
+        actor_id=ctx.actor_id,
+        event_type=f"mcp.tool.{tool}",
+        resource_type="moment",
+        resource_id=resource_id,
+        request_id=ctx.request_id,
+        allowed=True,
+        metadata=details,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -775,12 +886,663 @@ def _parse_optional_datetime(value: str, name: str) -> datetime:
         ) from exc
 
 
+# ---------------------------------------------------------------------------
+# 通用 Moment 工具：创建 / 时间线 / 搜索 / 统计 / 每日回顾
+# ---------------------------------------------------------------------------
+
+
+async def _create_typed_moment(
+    ctx: McpCallContext,
+    *,
+    title: str,
+    description: str | None,
+    category: str,
+    tags: list[str] | None,
+    persons: list[str] | None,
+    event: str | None,
+    occurred_at: str | None,
+    timezone_name: str,
+    moment_type: str,
+    payload: dict | None,
+    idempotency_key: str,
+    operation: str,
+) -> tuple[Moment, bool]:
+    resolved_title = title.strip()
+    if not resolved_title or len(resolved_title) > 20:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="title 必须为 1~20 个字符。",
+            status_code=400,
+        )
+    if description is not None and len(description) > 240:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="description 不能超过 240 个字符。",
+            status_code=400,
+        )
+    try:
+        resolved_category = MomentCategory(category)
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="category 不在允许范围内。",
+            status_code=400,
+            details={"category": category},
+        ) from exc
+    if tags and (len(tags) > 5 or any(len(tag) > 20 for tag in tags)):
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="tags 最多 5 个且每项不超过 20 个字符。",
+            status_code=400,
+        )
+    if persons and (len(persons) > 10 or any(len(person) > 20 for person in persons)):
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="persons 最多 10 个且每项不超过 20 个字符。",
+            status_code=400,
+        )
+    if event is not None and len(event) > 50:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="event 不能超过 50 个字符。",
+            status_code=400,
+        )
+    _parse_timezone(timezone_name)
+    resolved_payload = payload or {}
+    validate_moment_type(moment_type, resolved_payload)
+    occurred = _parse_occurred_at(occurred_at)
+
+    request_body = {
+        "title": resolved_title,
+        "description": description,
+        "category": resolved_category.value,
+        "tags": tags or [],
+        "persons": persons or [],
+        "event": event,
+        "occurredAt": occurred_at,
+        "timezone": timezone_name,
+        "type": moment_type,
+        "payload": resolved_payload,
+    }
+    idem_repo = SqlIdempotencyRepository(ctx.session)
+    request_fp = fingerprint_payload(request_body)
+    idem_record = await idem_repo.acquire(
+        user_id=ctx.user_id,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        request_payload=request_body,
+    )
+    if idem_record.request_fingerprint != request_fp:
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="idempotencyKey 已用于不同的请求参数。",
+            status_code=409,
+        )
+    if idem_record.state == "completed" and idem_record.response_body:
+        resource_id = idem_record.resource_id
+        if resource_id:
+            existing = await PostgresMomentRepository(ctx.session).get_by_id(
+                resource_id, ctx.user_id
+            )
+            if existing is not None:
+                return existing, True
+
+    now = datetime.now(UTC)
+    moment = Moment(
+        id=uuid4(),
+        user_id=ctx.user_id,
+        title=resolved_title,
+        description=description,
+        voice_input=None,
+        ai_summary=None,
+        category=resolved_category,
+        tags=tuple(dict.fromkeys(tags or [])),
+        persons=tuple(dict.fromkeys(persons or [])),
+        event=event,
+        occurred_at=occurred,
+        timezone=timezone_name,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+        provenance=MomentProvenance(
+            source=ProvenanceSource.MCP,
+            client_id=ctx.actor_id,
+            mcp_tool_name=operation,
+        ),
+        moment_type=moment_type,
+        payload=resolved_payload,
+    )
+    created = await PostgresMomentRepository(ctx.session).create(moment)
+    response = _moment_item(created, detail=True)
+    await SqlMomentRevisionRepository(ctx.session).append(
+        user_id=created.user_id,
+        moment_id=created.id,
+        revision=created.revision,
+        operation="created",
+        snapshot=response,
+        actor_user_id=ctx.user_id,
+    )
+    await idem_repo.complete(
+        record_id=idem_record.id,
+        response_status=201,
+        response_body=response,
+        resource_id=created.id,
+    )
+    return created, False
+
+
+async def moments_create(
+    ctx: McpCallContext,
+    *,
+    title: str,
+    description: str | None,
+    category: str,
+    tags: list[str] | None,
+    persons: list[str] | None,
+    event: str | None,
+    occurred_at: str | None,
+    timezone_name: str,
+    moment_type: str,
+    payload: dict | None,
+    idempotency_key: str,
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    created, replayed = await _create_typed_moment(
+        ctx,
+        title=title,
+        description=description,
+        category=category,
+        tags=tags,
+        persons=persons,
+        event=event,
+        occurred_at=occurred_at,
+        timezone_name=timezone_name,
+        moment_type=moment_type,
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operation="moments_create",
+    )
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "created": not replayed,
+        "replayed": replayed,
+        "moment": _moment_item(created, detail=True),
+    }
+    await _append_tool_audit(
+        ctx,
+        tool="moments_create",
+        resource_id=created.id,
+        metadata={"replayed": replayed, "type": created.moment_type},
+    )
+    return _text_result(result)
+
+
+async def moments_list(
+    ctx: McpCallContext,
+    *,
+    limit: int,
+    cursor: str | None,
+    moment_type: str | None,
+    category: str | None,
+    tag: str | None,
+    from_: str | None,
+    to: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    start = _parse_optional_datetime(from_, "from") if from_ else None
+    end = _parse_optional_datetime(to, "to") if to else None
+    moments, has_more, next_cursor = await PostgresMomentRepository(ctx.session).list_by_user(
+        ctx.user_id,
+        limit=limit,
+        cursor=cursor,
+        moment_type=moment_type,
+        category=category,
+        tag=tag,
+        occurred_from=start,
+        occurred_to=end,
+    )
+    items = [_moment_item(moment) for moment in moments]
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "view": "timeline",
+        "items": items,
+        "total": len(items),
+        "hasMore": has_more,
+        "nextCursor": next_cursor,
+        "filters": {
+            "type": moment_type,
+            "category": category,
+            "tag": tag,
+            "from": from_,
+            "to": to,
+        },
+    }
+    await _append_tool_audit(ctx, tool="moments_list", result_count=len(items))
+    return _text_result(result)
+
+
+async def moments_search(
+    ctx: McpCallContext,
+    *,
+    query: str,
+    limit: int,
+    moment_type: str | None,
+    category: str | None,
+    from_: str | None,
+    to: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    normalized = query.strip().casefold()
+    if not normalized:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="query 不能为空。",
+            status_code=400,
+        )
+    start = _parse_optional_datetime(from_, "from") if from_ else None
+    end = _parse_optional_datetime(to, "to") if to else None
+    moments = await PostgresMomentRepository(ctx.session).list_by_user_range(
+        ctx.user_id,
+        occurred_from=start,
+        occurred_to=end,
+        moment_type=moment_type,
+    )
+    matched: list[Moment] = []
+    for moment in moments:
+        if category and moment.category.value != category:
+            continue
+        searchable = " ".join(
+            [
+                moment.title,
+                moment.description or "",
+                moment.ai_summary or "",
+                " ".join(moment.tags),
+                " ".join(moment.persons),
+                moment.event or "",
+                " ".join(str(value) for value in (moment.payload or {}).values()),
+            ]
+        ).casefold()
+        if normalized in searchable:
+            matched.append(moment)
+    matched.sort(key=lambda item: (item.occurred_at, item.id), reverse=True)
+    visible = matched[:limit]
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "view": "search",
+        "query": query,
+        "items": [_moment_item(moment) for moment in visible],
+        "total": len(matched),
+        "hasMore": len(matched) > limit,
+        "filters": {
+            "type": moment_type,
+            "category": category,
+            "from": from_,
+            "to": to,
+        },
+    }
+    await _append_tool_audit(
+        ctx,
+        tool="moments_search",
+        result_count=len(visible),
+        metadata={"queryLength": len(query)},
+    )
+    return _text_result(result)
+
+
+async def moments_count(
+    ctx: McpCallContext,
+    *,
+    moment_type: str | None,
+    category: str | None,
+    from_: str | None,
+    to: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    start = _parse_optional_datetime(from_, "from") if from_ else None
+    end = _parse_optional_datetime(to, "to") if to else None
+    moments = await PostgresMomentRepository(ctx.session).list_by_user_range(
+        ctx.user_id,
+        occurred_from=start,
+        occurred_to=end,
+        moment_type=moment_type,
+    )
+    if category:
+        moments = [moment for moment in moments if moment.category.value == category]
+    by_category: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for moment in moments:
+        by_category[moment.category.value] = by_category.get(moment.category.value, 0) + 1
+        by_type[moment.moment_type] = by_type.get(moment.moment_type, 0) + 1
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "count": len(moments),
+        "byCategory": by_category,
+        "byType": by_type,
+        "from": from_,
+        "to": to,
+    }
+    await _append_tool_audit(ctx, tool="moments_count", result_count=len(moments))
+    return _text_result(result)
+
+
+async def reviews_daily(
+    ctx: McpCallContext,
+    *,
+    day: str | None,
+    timezone_name: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    start, end, local_day = _day_bounds(day, timezone_name)
+    moments = await PostgresMomentRepository(ctx.session).list_by_user_range(
+        ctx.user_id,
+        occurred_from=start,
+        occurred_to=end,
+    )
+    moments.sort(key=lambda item: (item.occurred_at, item.id), reverse=True)
+    by_category: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for moment in moments:
+        by_category[moment.category.value] = by_category.get(moment.category.value, 0) + 1
+        by_type[moment.moment_type] = by_type.get(moment.moment_type, 0) + 1
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "view": "daily-review",
+        "date": local_day.isoformat(),
+        "timezone": timezone_name or "UTC",
+        "count": len(moments),
+        "byCategory": by_category,
+        "byType": by_type,
+        "highlights": [_moment_item(moment) for moment in moments[:8]],
+        "prompt": (
+            "今天还没有记录。可以补一条最值得记住的瞬间。"
+            if not moments
+            else f"今天留下了 {len(moments)} 条记录，回看其中最有感触的一条吧。"
+        ),
+    }
+    await _append_tool_audit(ctx, tool="reviews_daily", result_count=len(moments))
+    return _text_result(result)
+
+
+# ---------------------------------------------------------------------------
+# 习惯 MCP Apps 工具：目标 / 打卡 / 进度
+# ---------------------------------------------------------------------------
+
+
+def _habit_goal_item(goal: HabitGoal) -> dict:
+    return {
+        "id": str(goal.id),
+        "name": goal.name,
+        "unit": goal.unit,
+        "frequency": goal.frequency,
+        "timesPerWeek": goal.times_per_week,
+        "color": goal.color,
+        "revision": goal.revision,
+        "createdAt": goal.created_at.isoformat(),
+    }
+
+
+async def habit_goals_list(ctx: McpCallContext) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    goals = await SqlHabitGoalRepository(ctx.session).list_by_user(ctx.user_id)
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "goals": [_habit_goal_item(goal) for goal in goals],
+        "total": len(goals),
+    }
+    await _append_tool_audit(ctx, tool="habit_goals_list", result_count=len(goals))
+    return _text_result(result)
+
+
+async def habit_goal_create(
+    ctx: McpCallContext,
+    *,
+    name: str,
+    unit: str | None,
+    frequency: str,
+    times_per_week: int | None,
+    color: str | None,
+    idempotency_key: str,
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    resolved_name = name.strip()
+    if not resolved_name or len(resolved_name) > 30:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="name 必须为 1~30 个字符。",
+            status_code=400,
+        )
+    if frequency not in {"daily", "weekly"}:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="frequency 只能是 daily 或 weekly。",
+            status_code=400,
+        )
+    if frequency == "weekly" and not times_per_week:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="weekly 目标必须提供 timesPerWeek。",
+            status_code=400,
+        )
+    if times_per_week is not None and not 1 <= times_per_week <= 7:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="timesPerWeek 必须在 1~7 之间。",
+            status_code=400,
+        )
+    request_body = {
+        "name": resolved_name,
+        "unit": unit,
+        "frequency": frequency,
+        "timesPerWeek": times_per_week,
+        "color": color,
+    }
+    idem_repo = SqlIdempotencyRepository(ctx.session)
+    request_fp = fingerprint_payload(request_body)
+    idem_record = await idem_repo.acquire(
+        user_id=ctx.user_id,
+        operation="habit_goal_create",
+        idempotency_key=idempotency_key,
+        request_payload=request_body,
+    )
+    if idem_record.request_fingerprint != request_fp:
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="idempotencyKey 已用于不同的请求参数。",
+            status_code=409,
+        )
+    replayed = False
+    created = None
+    if idem_record.state == "completed" and idem_record.resource_id:
+        created = await SqlHabitGoalRepository(ctx.session).get_by_id(
+            idem_record.resource_id, ctx.user_id
+        )
+        replayed = created is not None
+    if created is None:
+        now = datetime.now(UTC)
+        goal = HabitGoal(
+            id=uuid4(),
+            user_id=ctx.user_id,
+            name=resolved_name,
+            unit=unit.strip() if unit else None,
+            frequency=frequency,
+            times_per_week=times_per_week,
+            color=color,
+            revision=1,
+            created_at=now,
+            updated_at=now,
+        )
+        created = await SqlHabitGoalRepository(ctx.session).create(goal)
+        await idem_repo.complete(
+            record_id=idem_record.id,
+            response_status=201,
+            response_body={"goal": _habit_goal_item(created)},
+            resource_id=created.id,
+        )
+    await SqlAuditEventRepository(ctx.session).append(
+        user_id=ctx.user_id,
+        actor_type="mcp",
+        actor_id=ctx.actor_id,
+        event_type="mcp.tool.habit_goal_create",
+        resource_type="habit_goal",
+        resource_id=created.id,
+        request_id=ctx.request_id,
+        allowed=True,
+        metadata={"tool": "habit_goal_create", "scopes": list(ctx.scopes)},
+    )
+    return _text_result(
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "created": not replayed,
+            "replayed": replayed,
+            "goal": _habit_goal_item(created),
+        }
+    )
+
+
+async def habit_checkin_create(
+    ctx: McpCallContext,
+    *,
+    goal_id: str,
+    done: bool,
+    count: int | None,
+    occurred_at: str | None,
+    timezone_name: str,
+    note: str | None,
+    idempotency_key: str,
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    try:
+        goal_uuid = UUID(goal_id)
+    except (ValueError, TypeError) as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="goalId 不是合法的 UUID。",
+            status_code=400,
+            details={"goalId": goal_id},
+        ) from exc
+    goal = await SqlHabitGoalRepository(ctx.session).get_by_id(goal_uuid, ctx.user_id)
+    if goal is None:
+        raise ApplicationError(
+            code="HABIT_GOAL_NOT_FOUND",
+            message="未找到该习惯目标。",
+            status_code=404,
+            details={"goalId": goal_id},
+        )
+    payload: dict = {"habit": goal.name, "done": done, "goalId": goal_id}
+    if goal.unit:
+        payload["unit"] = goal.unit
+    if count is not None:
+        payload["count"] = count
+    created, replayed = await _create_typed_moment(
+        ctx,
+        title=(f"{goal.name}打卡" if done else f"{goal.name}未完成")[:20],
+        description=note,
+        category="habit",
+        tags=["打卡"],
+        persons=None,
+        event=None,
+        occurred_at=occurred_at,
+        timezone_name=timezone_name,
+        moment_type="habit",
+        payload=payload,
+        idempotency_key=idempotency_key,
+        operation="habit_checkin_create",
+    )
+    await _append_tool_audit(
+        ctx,
+        tool="habit_checkin_create",
+        resource_id=created.id,
+        metadata={"goalId": goal_id, "done": done, "replayed": replayed},
+    )
+    return _text_result(
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "created": not replayed,
+            "replayed": replayed,
+            "goal": _habit_goal_item(goal),
+            "checkin": _moment_item(created),
+        }
+    )
+
+
+async def habit_progress(
+    ctx: McpCallContext,
+    *,
+    days: int,
+    timezone_name: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.read")
+    zone = _parse_timezone(timezone_name)
+    today = datetime.now(zone).date()
+    start_day = today - timedelta(days=days - 1)
+    start = datetime.combine(start_day, time.min, tzinfo=zone).astimezone(UTC)
+    end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
+    goals = await SqlHabitGoalRepository(ctx.session).list_by_user(ctx.user_id)
+    checkins = await PostgresMomentRepository(ctx.session).list_by_user_range(
+        ctx.user_id,
+        occurred_from=start,
+        occurred_to=end,
+        moment_type="habit",
+    )
+    completed: dict[str, set[date]] = {}
+    for moment in checkins:
+        payload = moment.payload or {}
+        if not payload.get("done"):
+            continue
+        goal_id = str(payload.get("goalId") or "")
+        if not goal_id:
+            continue
+        local_date = moment.occurred_at.astimezone(zone).date()
+        completed.setdefault(goal_id, set()).add(local_date)
+
+    day_labels = [start_day + timedelta(days=offset) for offset in range(days)]
+    goal_items = []
+    for goal in goals:
+        goal_id = str(goal.id)
+        dates = completed.get(goal_id, set())
+        streak = 0
+        cursor = today
+        while cursor in dates:
+            streak += 1
+            cursor -= timedelta(days=1)
+        goal_items.append(
+            {
+                **_habit_goal_item(goal),
+                "todayDone": today in dates,
+                "completedDays": len(dates),
+                "currentStreak": streak,
+                "days": [{"date": day.isoformat(), "done": day in dates} for day in day_labels],
+            }
+        )
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        "view": "habits",
+        "timezone": timezone_name or "UTC",
+        "from": start_day.isoformat(),
+        "to": today.isoformat(),
+        "days": days,
+        "goals": goal_items,
+        "total": len(goal_items),
+    }
+    await _append_tool_audit(ctx, tool="habit_progress", result_count=len(goal_items))
+    return _text_result(result)
+
+
 __all__ = [
     "McpCallContext",
     "bookkeeping_create",
     "bookkeeping_list",
     "bookkeeping_summary",
     "bookkeeping_plan",
+    "moments_create",
+    "moments_list",
+    "moments_search",
+    "moments_count",
+    "reviews_daily",
     "moments_get",
+    "habit_goals_list",
+    "habit_goal_create",
+    "habit_checkin_create",
+    "habit_progress",
     "err_result",
 ]

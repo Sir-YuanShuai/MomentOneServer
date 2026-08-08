@@ -24,6 +24,7 @@ from app.infrastructure.database.repositories.idempotency_repository import (
     IdempotencyRecord,
 )
 from app.infrastructure.jwt.issuer import JwtIssuer
+from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp import tools as mcp_tools
 from app.modules.mcp.endpoint import McpComponent
 from app.modules.mcp.token_verifier import MomentTokenVerifier
@@ -244,6 +245,28 @@ class FakeMomentRepository:
         return items
 
 
+class FakeHabitGoalRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, HabitGoal] = {}
+
+    async def create(self, goal: HabitGoal) -> HabitGoal:
+        self._store[goal.id] = goal
+        return goal
+
+    async def get_by_id(self, goal_id: UUID, user_id: UUID) -> HabitGoal | None:
+        goal = self._store.get(goal_id)
+        if goal is None or goal.user_id != user_id or goal.deleted_at is not None:
+            return None
+        return goal
+
+    async def list_by_user(self, user_id: UUID) -> list[HabitGoal]:
+        return [
+            goal
+            for goal in self._store.values()
+            if goal.user_id == user_id and goal.deleted_at is None
+        ]
+
+
 class FakeIdempotencyRepository:
     def __init__(self) -> None:
         self._store: dict[tuple[UUID, str, str], IdempotencyRecord] = {}
@@ -334,6 +357,7 @@ def fake_repos() -> dict[str, Any]:
         "idempotency": FakeIdempotencyRepository(),
         "audit": FakeAuditRepository(),
         "revision": FakeRevisionRepository(),
+        "habit": FakeHabitGoalRepository(),
     }
 
 
@@ -359,12 +383,14 @@ def app(
             "SqlIdempotencyRepository",
             "SqlAuditEventRepository",
             "SqlMomentRevisionRepository",
+            "SqlHabitGoalRepository",
         )
     }
     mcp_tools.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     mcp_tools.SqlIdempotencyRepository = lambda session: fake_repos["idempotency"]  # type: ignore[assignment]
     mcp_tools.SqlAuditEventRepository = lambda session: fake_repos["audit"]  # type: ignore[assignment]
     mcp_tools.SqlMomentRevisionRepository = lambda session: fake_repos["revision"]  # type: ignore[assignment]
+    mcp_tools.SqlHabitGoalRepository = lambda session: fake_repos["habit"]  # type: ignore[assignment]
 
     # 发现端点用测试 settings（mcp_base_url=testserver）
     from app.core.config import get_settings
@@ -488,15 +514,35 @@ async def test_mcp_list_tools_with_qr_binding_token(
         )
     tools = data["result"]["tools"]
     names = [t["name"] for t in tools]
-    assert {"bookkeeping_create", "bookkeeping_list", "bookkeeping_summary", "moments_get"} <= set(
-        names
-    )
+    assert {
+        "bookkeeping_create",
+        "bookkeeping_list",
+        "bookkeeping_summary",
+        "moments_create",
+        "moments_list",
+        "moments_search",
+        "moments_count",
+        "reviews_daily",
+        "moments_get",
+        "habit_goals_list",
+        "habit_goal_create",
+        "habit_checkin_create",
+        "habit_progress",
+    } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
     assert "moments.write" in create.get("description", "")
     list_tool = next(t for t in tools if t["name"] == "bookkeeping_list")
     assert (
         list_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == "ui://moment-one/bookkeeping"
+    )
+    timeline_tool = next(t for t in tools if t["name"] == "moments_list")
+    assert timeline_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
+        "ui://moment-one/timeline"
+    )
+    habit_tool = next(t for t in tools if t["name"] == "habit_progress")
+    assert habit_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
+        "ui://moment-one/habits"
     )
 
 
@@ -751,6 +797,161 @@ async def test_bookkeeping_list_and_summary(
     assert cats["餐饮"] == 35.5
     assert cats["交通"] == 12.0
     assert "工资" not in cats  # 收入不进分类小计
+
+
+@pytest.mark.asyncio
+async def test_timeline_apps_tools_flow(
+    app: FastAPI, fake_repos: dict[str, Any], tmp_path: Path
+) -> None:
+    """时间线 App：创建 → 列表 → 搜索 → 每日回顾 → 数量统计。"""
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+
+        async def call(tool: str, arguments: dict[str, Any], request_id: int) -> dict:
+            data = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": tool, "arguments": arguments},
+                },
+            )
+            assert data["result"].get("isError") in (False, None), data
+            return data["result"]["structuredContent"]
+
+        created = await call(
+            "moments_create",
+            {
+                "title": "西湖边的晚风",
+                "description": "和朋友沿着湖边散步",
+                "category": "travel",
+                "tags": ["杭州", "散步"],
+                "occurredAt": datetime.now(UTC).isoformat(),
+                "timezone": "Asia/Shanghai",
+                "idempotencyKey": "moment-app-key-001",
+            },
+            30,
+        )
+        moment_id = created["moment"]["id"]
+        assert created["created"] is True
+        assert created["moment"]["provenance"]["source"] == "mcp"
+
+        timeline = await call("moments_list", {"limit": 20}, 31)
+        assert timeline["view"] == "timeline"
+        assert timeline["items"][0]["id"] == moment_id
+
+        search = await call("moments_search", {"query": "西湖", "limit": 20}, 32)
+        assert search["total"] == 1
+        assert search["items"][0]["title"] == "西湖边的晚风"
+
+        review = await call(
+            "reviews_daily",
+            {
+                "date": datetime.now(UTC).date().isoformat(),
+                "timezone": "UTC",
+            },
+            33,
+        )
+        assert review["view"] == "daily-review"
+        assert review["count"] == 1
+
+        count = await call("moments_count", {}, 34)
+        assert count["count"] == 1
+        assert count["byCategory"]["travel"] == 1
+
+    assert any(
+        item["event_type"] == "mcp.tool.moments_search" for item in fake_repos["audit"].calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_habit_apps_tools_flow(
+    app: FastAPI, fake_repos: dict[str, Any], tmp_path: Path
+) -> None:
+    """习惯 App：创建目标 → 七日面板 → 打卡 → 今日状态和连续天数更新。"""
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+
+        async def call(tool: str, arguments: dict[str, Any], request_id: int) -> dict:
+            data = await _post(
+                client,
+                session_id,
+                token,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": tool, "arguments": arguments},
+                },
+            )
+            assert data["result"].get("isError") in (False, None), data
+            return data["result"]["structuredContent"]
+
+        created = await call(
+            "habit_goal_create",
+            {
+                "name": "晨跑",
+                "frequency": "daily",
+                "unit": "公里",
+                "color": "#557a62",
+                "idempotencyKey": "habit-goal-key-001",
+            },
+            40,
+        )
+        goal_id = created["goal"]["id"]
+
+        before = await call("habit_progress", {"days": 7, "timezone": "UTC"}, 41)
+        assert before["goals"][0]["todayDone"] is False
+
+        checkin = await call(
+            "habit_checkin_create",
+            {
+                "goalId": goal_id,
+                "done": True,
+                "count": 3,
+                "timezone": "UTC",
+                "idempotencyKey": "habit-checkin-key-001",
+            },
+            42,
+        )
+        assert checkin["checkin"]["type"] == "habit"
+
+        after = await call("habit_progress", {"days": 7, "timezone": "UTC"}, 43)
+        assert after["goals"][0]["todayDone"] is True
+        assert after["goals"][0]["currentStreak"] == 1
+        assert after["goals"][0]["completedDays"] == 1
+
+    assert len(fake_repos["habit"]._store) == 1
+    assert len(fake_repos["moment"]._store) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read",))
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+        data = await _post(
+            client,
+            session_id,
+            token,
+            {"jsonrpc": "2.0", "id": 50, "method": "resources/list", "params": {}},
+        )
+    uris = {resource["uri"] for resource in data["result"]["resources"]}
+    assert {
+        "ui://moment-one/bookkeeping",
+        "ui://moment-one/timeline",
+        "ui://moment-one/habits",
+    } <= uris
 
 
 @pytest.mark.asyncio

@@ -1,16 +1,16 @@
 {
-  "name": "moment-one-mcp-apps-bookkeeping",
+  "name": "moment-one-mcp-apps",
   "version": "1.0.0",
-  "description": "",
+  "description": "Moment One MCP Apps: bookkeeping, timeline, and habits",
   "main": "index.js",
   "scripts": {
-    "build": "tsc --noEmit && cross-env INPUT=bookkeeping.html vite build",
+    "build": "tsc --noEmit && cross-env INPUT=bookkeeping.html vite build && cross-env INPUT=timeline.html vite build && cross-env INPUT=habits.html vite build",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.5"
   },
