@@ -1,6 +1,6 @@
 # MomentOneServer — 实现进度
 
-> 文档状态：Current  |  更新日期：2026-08-07
+> 文档状态：Current  |  更新日期：2026-08-08
 >
 > 本文件记录**当前已实现的代码、表和 API**，是高频更新的"现状快照"。
 > 目标设计见 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md)，
@@ -165,9 +165,9 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
-| MCP Server | `app/modules/mcp/`（server/tools/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（第一版：bookkeeping_create/list/summary + moments_get；ui://moment-one/bookkeeping） |
+| MCP Server | `app/modules/mcp/`（server/tools/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；通用 Moment 创建/列表/搜索/计数/详情；每日回顾；习惯目标/打卡/进度；工具级 Scope + 审计） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
-| MCP Apps UI | `mcp_apps/bookkeeping/`（vite 单文件构建 → dist/bookkeeping.html，`@modelcontextprotocol/ext-apps` app-bridge） | 已实现（记账列表 + 收支/分类统计；结构化渲染 + 文本降级） |
+| MCP Apps UI | `mcp_apps/bookkeeping/`（Vite 多入口单文件构建，`@modelcontextprotocol/ext-apps`） | 已实现 3 个紧凑结果卡：`bookkeeping` / `timeline` / `habits`；卡片只渲染本次 tool 的 structuredContent，不在 UI 内提供搜索表单或主动拉取数据 |
 | Audit | `app/modules/audit/` | 骨架 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
 | Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）） |
