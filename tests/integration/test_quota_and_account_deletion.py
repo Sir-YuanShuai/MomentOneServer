@@ -109,3 +109,58 @@ async def test_quota_idempotency_and_account_deletion() -> None:
             await session.rollback()
     finally:
         await database.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_plan_change_is_immediately_visible_in_account_snapshot() -> None:
+    """Changing Free -> Pro must refresh storage and periodic quota snapshots."""
+    settings = Settings()
+    if not settings.database_url:
+        pytest.skip("MOMENT_ONE_DATABASE_URL is not configured")
+
+    database = Database(settings)
+    try:
+        user_id = uuid4()
+        async with database.session_factory() as session:
+            session.add(
+                User(
+                    id=user_id,
+                    casdoor_sub=f"plan-refresh-{user_id}",
+                    casdoor_user_id=str(user_id),
+                    display_name="Plan Refresh Test",
+                    status="active",
+                    revision=1,
+                )
+            )
+            await session.flush()
+            entitlements = EntitlementRepository(session)
+            account = await entitlements.ensure_user_defaults(user_id)
+            # Materialize Free quota rows so the Pro assignment exercises the
+            # existing-row update path used by production accounts.
+            await QuotaRepository(session).ensure_current_accounts(user_id)
+            changed = await entitlements.set_plan(
+                user_id,
+                plan_key="pro",
+                expected_revision=account.revision,
+            )
+            assert changed is not None
+            await session.commit()
+
+        async with database.session_factory() as session:
+            from app.modules.admin.account import AccountRepository
+
+            snapshot = await AccountRepository(session).account(user_id)
+            assert snapshot is not None
+            assert snapshot["plan"]["key"] == "pro"  # type: ignore[index]
+            assert snapshot["plan"]["name"] == "Pro"  # type: ignore[index]
+            assert snapshot["storage"]["effectiveQuotaBytes"] == 50 * 1024**3  # type: ignore[index]
+            quotas = {
+                item["quotaKey"]: item["limit"]  # type: ignore[index]
+                for item in snapshot["quotaAccounts"]  # type: ignore[union-attr]
+            }
+            assert quotas["api.requests.month"] == 500_000
+            assert quotas["mcp.tool_calls.month"] == 100_000
+            await session.rollback()
+    finally:
+        await database.dispose()
