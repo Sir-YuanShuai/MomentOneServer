@@ -25,6 +25,7 @@ class QuotaAccount(Base):
     """用户当前周期额度快照；period_start 使用 UTC，非周期额度固定为 Unix epoch。"""
 
     __tablename__ = "quota_accounts"
+    __mapper_args__ = {"eager_defaults": True}
     __table_args__ = (
         PrimaryKeyConstraint("user_id", "quota_key", "period_start", name="pk_quota_accounts"),
         CheckConstraint("limit_value >= 0", name="ck_quota_accounts_limit_nonneg"),
