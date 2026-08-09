@@ -11,11 +11,11 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from app.api.error_handlers import register_error_handlers
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
-from app.core.errors import ApplicationError
 from app.core.logging import configure_logging
 from app.core.request_context import request_id_context
 from app.infrastructure.database.session import init_database
 from app.modules.mcp.endpoint import McpComponent
+from app.modules.usage.recorder import ApiUsageMetric, ApiUsageRecorder
 
 logger = structlog.get_logger()
 
@@ -37,7 +37,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 class ApiUsageMiddleware(BaseHTTPMiddleware):
-    """按 UTC 日聚合 /v1 与 /mcp 请求，不记录查询参数或私密请求体。"""
+    """Queue /v1 and /mcp metrics without acquiring a second request connection."""
+
+    def __init__(self, app, *, recorder: ApiUsageRecorder) -> None:
+        super().__init__(app)
+        self._recorder = recorder
 
     async def dispatch(
         self,
@@ -50,46 +54,20 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         latency_ms = round((time.monotonic() - started) * 1000)
         route_object = request.scope.get("route")
-        route = getattr(route_object, "path", None) or request.url.path
-        try:
-            from app.infrastructure.database.repositories.api_usage_repository import (
-                ApiUsageRepository,
+        route = str(getattr(route_object, "path", None) or request.url.path)
+        self._recorder.submit(
+            ApiUsageMetric(
+                route=route,
+                method=request.method,
+                status_code=response.status_code,
+                latency_ms=latency_ms,
+                user_id=getattr(request.state, "auth_user_id", None),
+                actor_type=str(getattr(request.state, "auth_method", "web")),
+                client_id=getattr(request.state, "auth_client_id", None),
+                device_id=getattr(request.state, "auth_device_id", None),
+                request_id=request_id_context.get(),
             )
-            from app.infrastructure.database.session import get_database
-
-            async with get_database().session_factory() as session:
-                await ApiUsageRepository(session).record(
-                    route=str(route),
-                    method=request.method,
-                    status_code=response.status_code,
-                    latency_ms=latency_ms,
-                )
-                user_id = getattr(request.state, "auth_user_id", None)
-                if user_id is not None and not request.url.path.startswith("/v1/admin/"):
-                    from app.modules.quotas.repository import QuotaRepository
-
-                    request_id = request_id_context.get() or str(uuid4())
-                    try:
-                        await QuotaRepository(session).consume(
-                            user_id,
-                            "api.requests.month",
-                            amount=1,
-                            operation_key=f"api:{request_id}",
-                            actor_type=str(getattr(request.state, "auth_method", "web")),
-                            client_id=getattr(request.state, "auth_client_id", None),
-                            device_id=getattr(request.state, "auth_device_id", None),
-                            metadata={
-                                "route": str(route),
-                                "method": request.method,
-                                "statusCode": response.status_code,
-                            },
-                        )
-                    except ApplicationError as exc:
-                        if exc.code != "QUOTA_EXCEEDED":
-                            raise
-                await session.commit()
-        except Exception:
-            await logger.awarning("api_usage_record_failed", route=str(route))
+        )
         return response
 
 
@@ -127,14 +105,19 @@ def create_application(
     configure_logging(resolved_settings.log_level)
 
     mcp_component = mcp_component or McpComponent(resolved_settings)
+    usage_recorder = ApiUsageRecorder()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await logger.ainfo("application_started", environment=resolved_settings.env)
         db = init_database(resolved_settings)
-        async with mcp_component.run():
-            yield
-        await db.dispose()
+        await usage_recorder.start()
+        try:
+            async with mcp_component.run():
+                yield
+        finally:
+            await usage_recorder.stop()
+            await db.dispose()
         await logger.ainfo("application_stopped")
 
     app = FastAPI(
@@ -145,7 +128,7 @@ def create_application(
         lifespan=lifespan,
     )
 
-    app.add_middleware(ApiUsageMiddleware)
+    app.add_middleware(ApiUsageMiddleware, recorder=usage_recorder)
     app.add_middleware(McpRequestLogMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
