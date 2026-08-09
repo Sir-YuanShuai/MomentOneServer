@@ -178,7 +178,8 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Admin Operations | `app/modules/admin/` + `app/api/routes/admin.py` | 已实现（概览、用户、设备/MCP 授权、审计、过期记录 Preview + Confirm） |
 | Audit | `app/modules/audit/` | 已实现只追加写入与管理员只读查询 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
-| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）） |
+| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
+| Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 
 ## 未实现的目标表
 
@@ -189,6 +190,8 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Phase 1 | `user_identities`, `moment_revisions`, `idempotency_keys`, `audit_events` | 已实现（表 + ORM + repository；moments 路由已接入 revisions + audit） |
 | Phase 2 | `assets`, `moment_assets`, `user_configs` | `assets` + `moment_assets` 已实现（迁移 0007 + ORM + repository + API）；`user_configs` 待实现 |
 | Phase 3 | `pending_confirmations` | 已实现（替代内存态） |
+| Subscription Phase 1 | `plan_definitions`, `user_entitlements`, `user_storage_accounts`, `storage_quota_grants` | 已实现（迁移 0019 + ORM + Upload Reservation + 管理 API） |
+| Subscription Phase 2+ | `quota_accounts`, `quota_usage_events`, `quota_usage_buckets`, `product_entitlement_mappings`, `external_orders`, `billing_events` | 待后续批次实现 |
 | Phase 4+ | `sync_cursors`, `sync_change_log`, `oauth_clients`, `access_grants`, `agent_connections`, `ai_artifacts`, `search_embeddings` | 待实现 |
 
 ## 测试覆盖
@@ -210,9 +213,10 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
 | Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 创建/更新媒体集成 + 附件替换/保留/清空 + 缩略图生成/降级/URL 签发） |
 
-## 已完成设计、待实现（订阅/身份，2026-08-09）
+## 订阅/身份阶段进展（2026-08-09）
 
-- 订阅权益：Casdoor 管余额/订单/支付/订阅，Server 管 Entitlement、Quota 和执行；
+- **第一批已实现**：`plan_definitions`、`user_entitlements`、`user_storage_accounts`、`storage_quota_grants`、Upload Reservation、`overQuota` 和管理后台 API；
+- 订阅权益边界：Casdoor 管余额/订单/支付/订阅，Server 管 Entitlement、Quota 和执行；
 - 建议 Free/Plus/Pro 存储为 1/10/50 GiB，MCP/眼镜共享 Tool、写 Tool、Planner、设备和客户端额度；
 - 存储引入 used/reserved/effectiveQuota、Upload Reservation 和 Bucket 对账；
 - MCP `tools/list` 与 `agent_plan` 目标按 Scope + Entitlement + Quota 过滤；A2UI/Text/structuredContent 不重复计量；

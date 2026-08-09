@@ -41,6 +41,7 @@ from app.modules.assets.thumbnail import (
     THUMBNAIL_CONTENT_TYPE,
     generate_thumbnail,
 )
+from app.modules.entitlements.repository import EntitlementRepository
 
 router = APIRouter(prefix="/v1/assets", tags=["assets"])
 
@@ -48,6 +49,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------- 依赖 ----------
+
+
+def get_entitlement_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> EntitlementRepository:
+    return EntitlementRepository(session)
 
 
 def get_storage(
@@ -183,6 +190,7 @@ async def create_upload_intent(
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
+    quota_repo: EntitlementRepository = Depends(get_entitlement_repository),
 ) -> UploadIntentResponse:
     kind = infer_kind(body.contentType)
     if kind is None:
@@ -197,6 +205,20 @@ async def create_upload_intent(
             message=f"文件大小超过上限 {settings.max_upload_bytes} 字节。",
             status_code=413,
         )
+
+    plan_upload_limit = await quota_repo.max_upload_bytes(user_id)
+    effective_upload_limit = min(
+        settings.max_upload_bytes,
+        plan_upload_limit if plan_upload_limit is not None else settings.max_upload_bytes,
+    )
+    if body.sizeBytes > effective_upload_limit:
+        raise ApplicationError(
+            code="MEDIA_TOO_LARGE",
+            message=f"当前套餐单文件上限为 {effective_upload_limit} 字节。",
+            status_code=413,
+            details={"maxUploadBytes": effective_upload_limit},
+        )
+    await quota_repo.reserve_upload(user_id, body.sizeBytes)
 
     repo = AssetRepository(session)
     asset = await repo.create(
@@ -243,6 +265,7 @@ async def complete_upload(
     user_id: UUID = Depends(get_authenticated_user_id),
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage = Depends(get_storage),
+    quota_repo: EntitlementRepository = Depends(get_entitlement_repository),
 ) -> CompleteUploadResponse:
     asset_uuid = _parse_uuid(asset_id)
     repo = AssetRepository(session)
@@ -268,17 +291,40 @@ async def complete_upload(
             status_code=400,
         )
 
-    # head_object 验证对象存在
+    reserved_bytes = asset.size_bytes or 0
+
+    # head_object 验证对象存在。失败状态和额度释放必须先提交，否则异常响应会回滚事务。
     try:
         meta = storage.head_object(user_id=str(user_id), asset_id=str(asset.id))
     except Exception as exc:
-        # 标记 failed 并审计
         await repo.mark_failed(asset_uuid, user_id)
+        await quota_repo.release_upload(user_id, reserved_bytes=reserved_bytes)
+        await session.commit()
         raise ApplicationError(
             code="MEDIA_NOT_READY",
             message="对象存储中未找到上传对象。",
             status_code=422,
         ) from exc
+
+    if (
+        meta.size_bytes <= 0
+        or meta.size_bytes > reserved_bytes
+        or meta.content_type != asset.content_type
+    ):
+        await repo.mark_failed(asset_uuid, user_id)
+        await quota_repo.release_upload(user_id, reserved_bytes=reserved_bytes)
+        await session.commit()
+        raise ApplicationError(
+            code="MEDIA_UPLOAD_MISMATCH",
+            message="上传对象与 Upload Intent 声明不一致。",
+            status_code=422,
+            details={
+                "expectedMaxBytes": reserved_bytes,
+                "actualBytes": meta.size_bytes,
+                "expectedContentType": asset.content_type,
+                "actualContentType": meta.content_type,
+            },
+        )
 
     asset = await repo.mark_ready(
         asset_uuid,
@@ -292,6 +338,10 @@ async def complete_upload(
             message="未找到该 Asset。",
             status_code=404,
         )
+
+    await quota_repo.complete_upload(
+        user_id, reserved_bytes=reserved_bytes, actual_bytes=meta.size_bytes
+    )
 
     # 生成缩略图（仅 image 类）。失败只降级不影响上传成功——原图已 ready。
     if asset.kind == AssetKind.IMAGE:

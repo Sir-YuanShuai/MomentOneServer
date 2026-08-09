@@ -61,6 +61,9 @@ class UserRepository:
         )
         self._session.add(new_user)
         await self._session.flush()
+        from app.modules.entitlements.repository import EntitlementRepository
+
+        await EntitlementRepository(self._session).ensure_user_defaults(new_user.id)
         return new_user
 
 

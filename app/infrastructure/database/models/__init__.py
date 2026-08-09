@@ -6,6 +6,12 @@ from app.infrastructure.database.models.device import (
     Device,
     DeviceBinding,
 )
+from app.infrastructure.database.models.entitlement import (
+    PlanDefinition,
+    StorageQuotaGrant,
+    UserEntitlement,
+    UserStorageAccount,
+)
 from app.infrastructure.database.models.habit_goal import HabitGoal
 from app.infrastructure.database.models.idempotency import IdempotencyKey
 from app.infrastructure.database.models.identity import UserIdentity
@@ -24,6 +30,7 @@ __all__ = [
     "Device",
     "DeviceBinding",
     "HabitGoal",
+    "PlanDefinition",
     "IdempotencyKey",
     "McpOAuthClient",
     "McpOAuthCode",
@@ -32,6 +39,9 @@ __all__ = [
     "MomentAsset",
     "MomentRevision",
     "PendingConfirmation",
+    "StorageQuotaGrant",
     "User",
+    "UserEntitlement",
+    "UserStorageAccount",
     "UserIdentity",
 ]

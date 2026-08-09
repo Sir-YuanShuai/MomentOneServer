@@ -596,6 +596,10 @@ created_at timestamptz
 
 ### 5.16 计划、权益与商品映射
 
+> 实现状态（2026-08-09）：`plan_definitions` 与 `user_entitlements` 已由迁移 0019 实现；
+> `product_entitlement_mappings` 留待 Casdoor 订单接入批次。当前内置 Free / Plus / Pro
+> 计划，管理员变更套餐会撤销旧计划来源并发放新的计划与能力权益，不修改 Casdoor 余额。
+
 #### `plan_definitions`
 
 ```text
@@ -686,6 +690,11 @@ metadata jsonb
 按用户、额度 Key、周期聚合，供高频检查和后台统计；可由 Usage Event 重建。
 
 ### 5.18 用户存储账户
+
+> 实现状态（2026-08-09）：`user_storage_accounts` 与 `storage_quota_grants` 已由迁移 0019
+> 实现。Upload Intent 会在同一事务预留 `reserved_bytes`，Complete 后按对象实际大小转入
+> `used_bytes`；超额账户阻止新上传，但保留读取、下载和清理能力。管理员可变更套餐、追加/撤销
+> 非计划额度并按 Asset 元数据手动对账。Bucket Inventory 批量对账仍留待后续。
 
 #### `user_storage_accounts`
 
