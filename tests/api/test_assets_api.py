@@ -502,6 +502,28 @@ class FakeAuditRepository:
         self.calls.append({"event_type": event_type, "allowed": allowed})
 
 
+class FakeEntitlementRepository:
+    def __init__(self) -> None:
+        self.upload_limit = 20 * 1024 * 1024
+        self.reservations: list[int] = []
+        self.completions: list[tuple[int, int]] = []
+        self.releases: list[int] = []
+
+    async def max_upload_bytes(self, user_id: UUID) -> int | None:
+        return self.upload_limit
+
+    async def reserve_upload(self, user_id: UUID, size_bytes: int) -> None:
+        self.reservations.append(size_bytes)
+
+    async def complete_upload(
+        self, user_id: UUID, *, reserved_bytes: int, actual_bytes: int
+    ) -> None:
+        self.completions.append((reserved_bytes, actual_bytes))
+
+    async def release_upload(self, user_id: UUID, *, reserved_bytes: int) -> None:
+        self.releases.append(reserved_bytes)
+
+
 class FakeSession:
     async def flush(self) -> None:
         pass
@@ -614,6 +636,7 @@ def fake_repos() -> dict[str, Any]:
         "audit": FakeAuditRepository(),
         "asset": FakeAssetRepository(),
         "moment_asset": FakeMomentAssetRepository(),
+        "entitlement": FakeEntitlementRepository(),
     }
 
 
@@ -656,6 +679,7 @@ def app(
     original_moment_asset_repo = moments_routes.MomentAssetRepository
     original_assets_asset_repo = assets_routes.AssetRepository
     original_assets_audit_repo = assets_routes.SqlAuditEventRepository
+    original_entitlement_repo = assets_routes.EntitlementRepository
 
     moments_routes.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     moments_routes.SqlConfirmationRepository = lambda session: fake_repos["confirmation"]  # type: ignore[assignment]
@@ -666,6 +690,7 @@ def app(
     moments_routes.MomentAssetRepository = lambda session: fake_repos["moment_asset"]  # type: ignore[assignment]
     assets_routes.AssetRepository = lambda session: fake_repos["asset"]  # type: ignore[assignment]
     assets_routes.SqlAuditEventRepository = lambda session: fake_repos["audit"]  # type: ignore[assignment]
+    assets_routes.EntitlementRepository = lambda session: fake_repos["entitlement"]  # type: ignore[assignment]
 
     application.dependency_overrides[deps_module.get_auth_context] = _fake_auth_context
     application.dependency_overrides[deps_module.get_authenticated_user_id] = _fake_user_id
@@ -684,6 +709,7 @@ def app(
     moments_routes.MomentAssetRepository = original_moment_asset_repo  # type: ignore[assignment]
     assets_routes.AssetRepository = original_assets_asset_repo  # type: ignore[assignment]
     assets_routes.SqlAuditEventRepository = original_assets_audit_repo  # type: ignore[assignment]
+    assets_routes.EntitlementRepository = original_entitlement_repo  # type: ignore[assignment]
 
 
 # ---------- 测试 ----------
@@ -731,6 +757,47 @@ async def test_create_upload_intent_too_large(app: FastAPI) -> None:
         )
     assert resp.status_code == 413
     assert resp.json()["error"]["code"] == "MEDIA_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_create_upload_intent_respects_plan_limit(
+    app: FastAPI, fake_repos: dict[str, Any]
+) -> None:
+    fake_repos["entitlement"].upload_limit = 512
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/jpeg", "sizeBytes": 1024},
+        )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "MEDIA_TOO_LARGE"
+    assert response.json()["error"]["details"]["maxUploadBytes"] == 512
+
+
+@pytest.mark.asyncio
+async def test_complete_upload_rejects_object_larger_than_reservation(
+    app: FastAPI, fake_repos: dict[str, Any], fake_storage: FakeStorage
+) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        intent = await client.post(
+            "/v1/assets/upload-intents",
+            json={"contentType": "image/jpeg", "sizeBytes": 1024},
+        )
+        asset_id = intent.json()["assetId"]
+        fake_storage.seed_object(
+            user_id=str(USER_ID),
+            asset_id=asset_id,
+            size=2048,
+            content_type="image/jpeg",
+        )
+        response = await client.post(f"/v1/assets/{asset_id}/complete", json={})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "MEDIA_UPLOAD_MISMATCH"
+    assert fake_repos["entitlement"].releases == [1024]
+    failed = await fake_repos["asset"].get_by_id(UUID(asset_id), USER_ID)
+    assert failed is not None and failed.state == AssetState.FAILED
 
 
 @pytest.mark.asyncio
@@ -1000,9 +1067,9 @@ async def test_create_moment_with_asset_ids(
         )
         asset2 = intent2.json()["assetId"]
         # 2. complete 两张
-        for aid in (asset1, asset2):
+        for aid, content_type in ((asset1, "image/jpeg"), (asset2, "image/png")):
             fake_storage.seed_object(
-                user_id=str(USER_ID), asset_id=aid, size=1024, content_type="image/jpeg"
+                user_id=str(USER_ID), asset_id=aid, size=1024, content_type=content_type
             )
             await client.post(f"/v1/assets/{aid}/complete", json={})
         # 3. 创建 Moment 引用 assetIds

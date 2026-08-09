@@ -22,6 +22,7 @@ from app.infrastructure.database.session import get_db_session
 from app.infrastructure.storage.object_storage import ObjectStorageNotConfigured, S3ObjectStorage
 from app.modules.admin.auth import AdminContext, get_admin_context
 from app.modules.admin.domain import AdminAuditEvent, AdminAuthorization, AdminBinding, AdminUser
+from app.modules.admin.entitlements import AdminEntitlementRepository
 from app.modules.admin.repository import AdminRepository
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -56,8 +57,32 @@ class MaintenanceConfirmRequest(BaseModel):
     previewedAt: datetime
 
 
+class SetPlanRequest(BaseModel):
+    planKey: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    expectedRevision: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=240)
+
+
+class AddStorageGrantRequest(BaseModel):
+    quotaBytes: int = Field(gt=0, le=10 * 1024 * 1024 * 1024 * 1024)
+    expiresAt: datetime | None = None
+    expectedRevision: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=240)
+
+
+class ReconcileStorageRequest(BaseModel):
+    expectedRevision: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=240)
+
+
 def _admin_repo(session: AsyncSession = Depends(get_db_session)) -> AdminRepository:
     return AdminRepository(session)
+
+
+def _admin_entitlement_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminEntitlementRepository:
+    return AdminEntitlementRepository(session)
 
 
 def _user_dict(user: AdminUser) -> dict[str, object]:
@@ -452,6 +477,257 @@ async def revoke_authorization(
         resource_id=authorization_id,
     )
     return response
+
+
+@router.get("/plans")
+async def list_plans(
+    admin: AdminContext = Depends(get_admin_context),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, object]:
+    admin.require("admin.read")
+    from app.modules.entitlements.repository import EntitlementRepository
+
+    plans = await EntitlementRepository(session).list_plans(active_only=False)
+    return {
+        "items": [
+            {
+                "key": item.key,
+                "version": item.version,
+                "name": item.name,
+                "status": item.status,
+                "entitlements": item.entitlements,
+                "quotas": item.quotas,
+                "updatedAt": item.updated_at.isoformat(),
+            }
+            for item in plans
+        ]
+    }
+
+
+@router.get("/storage/summary")
+async def storage_summary(
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+) -> dict[str, object]:
+    admin.require("admin.read")
+    return await repo.summary()
+
+
+@router.get("/storage/accounts")
+async def list_storage_accounts(
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+    query: str | None = Query(default=None, max_length=120),
+    overQuota: bool | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, object]:
+    admin.require("admin.read")
+    items = await repo.list_accounts(query=query, over_quota=overQuota, limit=limit)
+    return {"items": items, "hasMore": False, "nextCursor": None}
+
+
+@router.get("/users/{user_id}/entitlements")
+async def user_entitlement_detail(
+    user_id: UUID,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+) -> dict[str, object]:
+    admin.require("admin.read")
+    detail = await repo.account_detail(user_id)
+    if detail is None:
+        raise ApplicationError(code="USER_NOT_FOUND", message="用户不存在。", status_code=404)
+    return detail
+
+
+@router.patch("/users/{user_id}/plan")
+async def set_user_plan(
+    user_id: UUID,
+    body: SetPlanRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    payload = {"userId": str(user_id), **body.model_dump(mode="json")}
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_set_user_plan",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    detail = await repo.set_plan(
+        user_id, plan_key=body.planKey, expected_revision=body.expectedRevision
+    )
+    if detail is None:
+        actual = await repo.account_revision(user_id)
+        raise ApplicationError(
+            code="REVISION_CONFLICT" if actual else "USER_NOT_FOUND",
+            message="用户存储账户不存在或版本已变化。",
+            status_code=409 if actual else 404,
+            details={"actualRevision": actual},
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.user_plan.changed",
+        resource_type="user",
+        resource_id=user_id,
+        allowed=True,
+        metadata={"planKey": body.planKey, "reason": body.reason},
+    )
+    await idem.complete(
+        record_id=record.id, response_status=200, response_body=detail, resource_id=user_id
+    )
+    return detail
+
+
+@router.post("/users/{user_id}/storage-grants")
+async def add_user_storage_grant(
+    user_id: UUID,
+    body: AddStorageGrantRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    if body.expiresAt is not None and body.expiresAt <= datetime.now(UTC):
+        raise ApplicationError(
+            code="INVALID_REQUEST", message="额度有效期必须晚于当前时间。", status_code=400
+        )
+    payload = {"userId": str(user_id), **body.model_dump(mode="json")}
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_add_storage_grant",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    detail = await repo.add_storage_grant(
+        user_id,
+        quota_bytes=body.quotaBytes,
+        expires_at=body.expiresAt,
+        expected_revision=body.expectedRevision,
+    )
+    if detail is None:
+        actual = await repo.account_revision(user_id)
+        raise ApplicationError(
+            code="REVISION_CONFLICT" if actual else "USER_NOT_FOUND",
+            message="用户存储账户不存在或版本已变化。",
+            status_code=409 if actual else 404,
+            details={"actualRevision": actual},
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.storage_grant.created",
+        resource_type="user",
+        resource_id=user_id,
+        allowed=True,
+        metadata={
+            "quotaBytes": body.quotaBytes,
+            "expiresAt": body.expiresAt.isoformat() if body.expiresAt else None,
+            "reason": body.reason,
+        },
+    )
+    await idem.complete(
+        record_id=record.id, response_status=200, response_body=detail, resource_id=user_id
+    )
+    return detail
+
+
+@router.post("/storage-grants/{grant_id}/revoke")
+async def revoke_storage_grant(
+    grant_id: UUID,
+    body: RevokeRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    payload = {"grantId": str(grant_id), **body.model_dump(mode="json")}
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_revoke_storage_grant",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    detail = await repo.revoke_storage_grant(grant_id, expected_revision=body.expectedRevision)
+    if detail is None:
+        actual = await repo.grant_revision(grant_id)
+        raise ApplicationError(
+            code="REVISION_CONFLICT" if actual else "STORAGE_GRANT_NOT_FOUND",
+            message="存储额度不存在、已失效或版本已变化。",
+            status_code=409 if actual else 404,
+            details={"actualRevision": actual},
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.storage_grant.revoked",
+        resource_type="storage_quota_grant",
+        resource_id=grant_id,
+        allowed=True,
+        metadata={"reason": body.reason},
+    )
+    await idem.complete(
+        record_id=record.id, response_status=200, response_body=detail, resource_id=grant_id
+    )
+    return detail
+
+
+@router.post("/users/{user_id}/storage/reconcile")
+async def reconcile_user_storage(
+    user_id: UUID,
+    body: ReconcileStorageRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminEntitlementRepository = Depends(_admin_entitlement_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    payload = {"userId": str(user_id), **body.model_dump(mode="json")}
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_reconcile_user_storage",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    detail = await repo.reconcile(user_id, expected_revision=body.expectedRevision)
+    if detail is None:
+        actual = await repo.account_revision(user_id)
+        raise ApplicationError(
+            code="REVISION_CONFLICT" if actual else "USER_NOT_FOUND",
+            message="用户存储账户不存在或版本已变化。",
+            status_code=409 if actual else 404,
+            details={"actualRevision": actual},
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.storage.reconciled",
+        resource_type="user",
+        resource_id=user_id,
+        allowed=True,
+        metadata={"reason": body.reason},
+    )
+    await idem.complete(
+        record_id=record.id, response_status=200, response_body=detail, resource_id=user_id
+    )
+    return detail
 
 
 @router.get("/audit-events", response_model=PageResponse)

@@ -44,3 +44,18 @@ async def test_version(app_settings: Settings) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"name": "moment-one-server", "version": "0.1.0"}
+
+
+def test_admin_entitlement_routes_registered(app_settings: Settings) -> None:
+    paths = create_application(app_settings).openapi()["paths"]
+    expected = {
+        "/v1/admin/plans",
+        "/v1/admin/storage/summary",
+        "/v1/admin/storage/accounts",
+        "/v1/admin/users/{user_id}/entitlements",
+        "/v1/admin/users/{user_id}/plan",
+        "/v1/admin/users/{user_id}/storage-grants",
+        "/v1/admin/storage-grants/{grant_id}/revoke",
+        "/v1/admin/users/{user_id}/storage/reconcile",
+    }
+    assert expected.issubset(paths)

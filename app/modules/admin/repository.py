@@ -15,6 +15,7 @@ from app.infrastructure.database.models import (
     Moment,
     PendingConfirmation,
     User,
+    UserStorageAccount,
 )
 from app.modules.admin.domain import (
     AdminAuditEvent,
@@ -420,7 +421,13 @@ class AdminRepository:
         async def count(stmt) -> int:
             return int((await self._session.scalar(stmt)) or 0)
 
+        stale_upload_cutoff = now - timedelta(hours=24)
         return {
+            "uploadIntents": await count(
+                select(func.count(Asset.id)).where(
+                    Asset.state == "uploading", Asset.created_at < stale_upload_cutoff
+                )
+            ),
             "bindingCodes": await count(
                 select(func.count(BindingCode.id)).where(
                     BindingCode.status == "pending", BindingCode.expires_at < now
@@ -440,6 +447,32 @@ class AdminRepository:
 
     async def expire_records(self) -> dict[str, int]:
         now = datetime.now(UTC)
+        stale_upload_cutoff = now - timedelta(hours=24)
+        stale_uploads = (
+            await self._session.execute(
+                select(Asset.user_id, func.coalesce(func.sum(Asset.size_bytes), 0))
+                .where(Asset.state == "uploading", Asset.created_at < stale_upload_cutoff)
+                .group_by(Asset.user_id)
+            )
+        ).all()
+        expired_uploads = await self._session.execute(
+            update(Asset)
+            .where(Asset.state == "uploading", Asset.created_at < stale_upload_cutoff)
+            .values(state="failed")
+        )
+        for user_id, reserved_bytes in stale_uploads:
+            account = await self._session.scalar(
+                select(UserStorageAccount)
+                .where(UserStorageAccount.user_id == user_id)
+                .with_for_update()
+            )
+            if account is None:
+                continue
+            account.reserved_bytes = max(0, account.reserved_bytes - int(reserved_bytes or 0))
+            account.over_quota = (
+                account.used_bytes + account.reserved_bytes > account.effective_quota_bytes
+            )
+            account.revision += 1
         binding = await self._session.execute(
             update(BindingCode)
             .where(BindingCode.status == "pending", BindingCode.expires_at < now)
@@ -457,6 +490,7 @@ class AdminRepository:
         )
         await self._session.flush()
         return {
+            "uploadIntents": int(getattr(expired_uploads, "rowcount", 0) or 0),
             "bindingCodes": int(getattr(binding, "rowcount", 0) or 0),
             "oauthCodes": int(getattr(oauth, "rowcount", 0) or 0),
             "confirmations": int(getattr(confirmations, "rowcount", 0) or 0),
