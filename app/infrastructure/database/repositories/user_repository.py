@@ -1,8 +1,10 @@
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import ApplicationError
 from app.infrastructure.database.models import User as UserORM
 from app.infrastructure.identity.casdoor import AuthenticatedPrincipal, CasdoorTokenVerifier
 
@@ -14,56 +16,66 @@ class UserRepository:
         self._session = session
 
     async def get_by_casdoor_sub(self, casdoor_sub: str) -> UserORM | None:
-        stmt = select(UserORM).where(UserORM.casdoor_sub == casdoor_sub)
-        result = await self._session.execute(stmt)
+        result = await self._session.execute(
+            select(UserORM).where(UserORM.casdoor_sub == casdoor_sub)
+        )
         return result.scalar_one_or_none()
 
+    async def get(self, user_id: UUID) -> UserORM | None:
+        result = await self._session.execute(select(UserORM).where(UserORM.id == user_id))
+        return result.scalar_one_or_none()
+
+    async def touch_active(self, user: UserORM) -> None:
+        now = datetime.now(UTC)
+        if user.last_active_at is None or now - user.last_active_at > timedelta(minutes=5):
+            user.last_active_at = now
+            await self._session.flush()
+
+    @staticmethod
+    def ensure_active(user: UserORM) -> None:
+        if user.status != "active":
+            raise ApplicationError(
+                code="ACCOUNT_SUSPENDED",
+                message="当前 Moment One 账号已被暂停。",
+                status_code=403,
+            )
+
     async def upsert_from_casdoor(
-        self,
-        principal: AuthenticatedPrincipal,
-        casdoor_user_id: str,
-    ) -> UUID:
-        """查找或创建本地用户记录，返回本地 UUID。"""
+        self, principal: AuthenticatedPrincipal, casdoor_user_id: str
+    ) -> UserORM:
         existing = await self.get_by_casdoor_sub(principal.subject)
         if existing:
-            # 更新 display_name / email（可能用户在 Casdoor 改了）
             if principal.display_name and principal.display_name != existing.display_name:
                 existing.display_name = principal.display_name
             if principal.email and principal.email != existing.email:
                 existing.email = principal.email
             await self._session.flush()
-            return existing.id
-
+            return existing
         new_user = UserORM(
             casdoor_sub=principal.subject,
             casdoor_user_id=casdoor_user_id,
             display_name=principal.display_name,
             email=principal.email,
+            status="active",
+            revision=1,
         )
         self._session.add(new_user)
         await self._session.flush()
-        return new_user.id
+        return new_user
 
 
 async def resolve_user_id(
-    session: AsyncSession,
-    verifier: CasdoorTokenVerifier,
-    access_token: str,
+    session: AsyncSession, verifier: CasdoorTokenVerifier, access_token: str
 ) -> UUID:
-    """完整认证流程：验签 → 查本地 users → 不存在则调 userinfo 同步。
-
-    Returns:
-        本地 users 表中的 UUID 主键。
-    """
     principal = verifier.verify(access_token)
     user_repo = UserRepository(session)
-    existing = await user_repo.get_by_casdoor_sub(principal.subject)
-
-    if existing:
-        return existing.id
-
-    # 首次登录：调 Casdoor userinfo 拿 UUID
-    userinfo = await verifier.fetch_userinfo(access_token)
-    casdoor_user_id = userinfo.get("id") or userinfo.get("sub") or principal.subject
-
-    return await user_repo.upsert_from_casdoor(principal, str(casdoor_user_id))
+    user = await user_repo.get_by_casdoor_sub(principal.subject)
+    if user is None:
+        userinfo = await verifier.fetch_userinfo(access_token)
+        casdoor_user_id = userinfo.get("id") or userinfo.get("sub") or principal.subject
+        user = await user_repo.upsert_from_casdoor(
+            principal.merge_userinfo(userinfo), str(casdoor_user_id)
+        )
+    UserRepository.ensure_active(user)
+    await user_repo.touch_active(user)
+    return user.id

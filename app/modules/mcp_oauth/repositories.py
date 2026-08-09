@@ -208,6 +208,7 @@ class McpAuthorizationRepository:
             return None
         orm.scope = scope
         orm.updated_at = datetime.now(UTC)
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return orm
 
@@ -224,6 +225,7 @@ class McpAuthorizationRepository:
             return None
         orm.scope = scope
         orm.updated_at = datetime.now(UTC)
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return orm
 
@@ -240,6 +242,7 @@ class McpAuthorizationRepository:
         orm.status = "revoked"
         orm.revoked_at = datetime.now(UTC)
         orm.updated_at = datetime.now(UTC)
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return orm
 
@@ -255,6 +258,7 @@ class McpAuthorizationRepository:
         orm.status = "revoked"
         orm.revoked_at = datetime.now(UTC)
         orm.updated_at = datetime.now(UTC)
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return orm
 

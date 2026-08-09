@@ -87,6 +87,10 @@ erDiagram
       varchar status
       text display_name
       text email
+      integer revision
+      timestamptz last_active_at
+      timestamptz disabled_at
+      text disable_reason
       timestamptz created_at
       timestamptz updated_at
     }
@@ -168,8 +172,12 @@ erDiagram
 |---|---|---:|---|
 | `id` | `uuid` | 否 | 主键 |
 | `status` | `varchar(32)` | 否 | `active/disabled/deleting/deleted` |
+| `revision` | `integer` | 否 | 管理操作乐观锁版本，初始为 1 |
 | `display_name` | `text` | 是 | 展示资料 |
 | `email` | `text` | 是 | 资料字段，不作为身份主键 |
+| `last_active_at` | `timestamptz` | 是 | 最近业务访问时间，允许节流更新 |
+| `disabled_at` | `timestamptz` | 是 | 应用访问被停用的时间 |
+| `disable_reason` | `varchar(240)` | 是 | 脱敏的管理原因，不存私密正文 |
 | `created_at` | `timestamptz` | 否 | 服务端时间 |
 | `updated_at` | `timestamptz` | 否 | 服务端时间 |
 
@@ -178,6 +186,8 @@ erDiagram
 ```text
 PRIMARY KEY (id)
 CHECK status IN (...)
+CHECK revision >= 1
+INDEX (status)
 ```
 
 不建议默认对 email 加唯一约束，因为身份提供方、大小写和账号合并规则尚未冻结。

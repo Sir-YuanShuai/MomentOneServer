@@ -147,6 +147,9 @@ class S3ObjectStorage:
         etag = str(resp.get("ETag", "")).strip('"')
         return ObjectMetadata(size_bytes=size, content_type=content_type, etag=etag)
 
+    def check_health(self) -> None:
+        self._client.head_bucket(Bucket=self._bucket)
+
     def create_download_url(
         self,
         *,

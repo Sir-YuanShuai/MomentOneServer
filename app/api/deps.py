@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.errors import ApplicationError
 from app.infrastructure.database.models import DeviceBinding as DeviceBindingORM
-from app.infrastructure.database.repositories.user_repository import resolve_user_id
+from app.infrastructure.database.repositories.user_repository import UserRepository, resolve_user_id
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
@@ -70,6 +70,14 @@ async def _verify_server_issued_token(
     """
     payload = jwt_issuer.verify_access_token(token)
     user_id = UUID(payload["sub"])
+    user_repo = UserRepository(session)
+    user = await user_repo.get(user_id)
+    if user is None:
+        raise ApplicationError(
+            code="TOKEN_INVALID", message="token 对应的用户不存在。", status_code=401
+        )
+    UserRepository.ensure_active(user)
+    await user_repo.touch_active(user)
     scope = tuple((payload.get("scope") or "").split())
     grant = payload.get("grant")
 

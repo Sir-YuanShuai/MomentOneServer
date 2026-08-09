@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -39,6 +39,7 @@ class DeviceBinding(Base):
     )
     scope: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     refresh_token_hash: Mapped[str | None] = mapped_column(String(128))
     bound_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
