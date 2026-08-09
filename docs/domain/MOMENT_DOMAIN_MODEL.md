@@ -91,6 +91,8 @@ issuer + subject
 
 邮箱、手机号和显示名仅为资料，不能代替稳定身份键。
 
+多个 External Identity 可以在完成真实 Provider 认证后关联同一 User；如果身份已属于另一个 User，必须进入账号合并流程，不能按相同 email 静默抢占。设备绑定和 MCP 授权不是 External Identity。详细设计见 `IDENTITY_ACCOUNT_LINKING.md`。
+
 ### 4.3 Moment
 
 用户在某个时间、地点或情境中保存的一段个人经历、观察或状态。

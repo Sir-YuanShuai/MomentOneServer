@@ -82,7 +82,7 @@ Moment One 三端架构：
 | issuer | `settings.jwt_issuer`（如 `https://api.momentone.app`） |
 | audience | `settings.jwt_audience`（如 `moment-one-api`） |
 | subject | `user_id`（UUID 字符串） |
-| TTL | `settings.access_token_ttl_seconds`（默认 900 = 15 分钟） |
+| TTL | `settings.access_token_ttl_seconds`（默认 3600 = 1 小时） |
 | claims | `sub`, `iss`, `aud`, `iat`, `nbf`, `exp`, `jti`, `scope`, `binding_id`, `device_id` |
 
 `scope` 是空格分隔字符串，如 `moments.read moments.write`。
@@ -139,6 +139,36 @@ refresh_token 不带 `scope`，刷新时 scope 以 `device_bindings.scope` 为�
 - **权限校验**：MCP Server 验证眼镜 token 时按 `client_id=glasses:{device_id}` 读授权记录 scope（存量无授权记录回退 `device_bindings.scope`，迁移 0015/0016 已回填）；
 - **撤销/删除设备**：`DELETE /v1/mcp/authorizations/{id}`（glasses 类型）同步撤销设备绑定；`DELETE /v1/device/bindings/{id}` 同步撤销授权记录；
 - **Web 端管理**：设置页「授权与设备」统一列表（眼镜设备 + MCP 客户端同款读写权限开关）。
+
+### 3.6 订阅、设备数量与远程调用额度
+
+DeviceBinding 表示授权关系，不代表用户天然拥有无限设备和无限远程调用。服务端在以下时点读取内部 User 的 Entitlement/Quota：
+
+1. 创建绑定会话：检查 `access.active_glasses`；
+2. 完成绑定：再次原子检查，防止并发超过设备数；
+3. 眼镜调用 REST/MCP：按业务操作计入用户统一额度；
+4. Token 刷新：检查 User 状态、Binding 状态和计划是否仍允许保留已有设备；
+5. 计划降级：不自动删除已有绑定，但若超过新计划上限则禁止新增；管理员或用户可选择撤销多余设备。
+
+建议默认：
+
+| 计划 | 活跃眼镜 | 活跃 MCP 客户端 | 远程 Tool/月 | 写 Tool/月 | `agent_plan`/日 |
+|---|---:|---:|---:|---:|---:|
+| Free | 1 | 1 | 1,000 | 100 | 30 |
+| Plus | 3 | 5 | 10,000 | 2,000 | 300 |
+| Pro | 10 | 20 | 100,000 | 20,000 | 3,000 |
+
+计量规则：
+
+- 眼镜和第三方 MCP Client 共享该用户额度；
+- 本地离线 Moment 创建不计远程 Tool；同步、上传和服务端 Tool 执行时计量；
+- REST 与 MCP 对同一幂等业务操作不重复计量；
+- 初始化、`tools/list`、Capability 协商和 Token 刷新不计商业 Tool 额度，但受安全速率限制；
+- A2UI/Text/structuredContent 是同一结果的不同表示，只计一次；
+- 额度耗尽时眼镜保留本地数据，禁止受限远程动作并返回稳定错误和 `resetAt`；
+- 设备数和调用额度以数据库为事实源，不能只写入 30 天 refresh_token 后长期信任 Token Claim。
+
+相关契约：`../../../docs/contracts/ENTITLEMENTS_AND_LIMITS.md`。
 
 ## 4. API 契约
 
@@ -253,7 +283,7 @@ grant_type=refresh_token
   "access_token": "eyJhbGciOi...",
   "refresh_token": "eyJhbGciOi...",
   "token_type": "Bearer",
-  "expires_in": 900,
+  "expires_in": 3600,
   "scope": "moments.read moments.write"
 }
 ```
@@ -327,6 +357,8 @@ MOMENT_ONE_REFRESH_TOKEN_TTL_SECONDS=2592000
 4. **device_id 由眼镜生成**：建议用设备序列号或首次启动生成的 UUID，Server 不主动生成，避免被伪造绑定到任意 device_id。
 5. **无 Casdoor 触达**：眼镜端 token 完全由 Server 签发，Casdoor 故障不影响已绑定眼镜。
 6. **refresh_token 不滚动**：30 天硬上限，避免永久在线风险。
+7. **订阅额度不写死在设备 Token**：Server 每次业务请求结合 User、Binding、Scope、Entitlement 和 Quota 判断。
+8. **离线优先**：云端额度不足不能删除眼镜本地记录，恢复网络后提示清理或升级。
 
 ## 8. 三端实现进度
 

@@ -209,3 +209,13 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | 习惯目标 API 测试 | `tests/api/test_habit_goals_api.py` | 已实现（CRUD + revision 冲突 + 两阶段删除） |
 | 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
 | Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 创建/更新媒体集成 + 附件替换/保留/清空 + 缩略图生成/降级/URL 签发） |
+
+## 已完成设计、待实现（订阅/身份，2026-08-09）
+
+- 订阅权益：Casdoor 管余额/订单/支付/订阅，Server 管 Entitlement、Quota 和执行；
+- 建议 Free/Plus/Pro 存储为 1/10/50 GiB，MCP/眼镜共享 Tool、写 Tool、Planner、设备和客户端额度；
+- 存储引入 used/reserved/effectiveQuota、Upload Reservation 和 Bucket 对账；
+- MCP `tools/list` 与 `agent_plan` 目标按 Scope + Entitlement + Quota 过滤；A2UI/Text/structuredContent 不重复计量；
+- 账号关联目标让 `user_identities` 接管认证，增加 Link Session、解绑 Preview/Confirm、User Merge；
+- 账号合并时迁移数据、设备、MCP、存储和权益，默认免费 Grant 不能重复领取；
+- 详细文档：`docs/domain/IDENTITY_ACCOUNT_LINKING.md`、`docs/data/STORAGE_DATA_MODEL.md`、根目录 `docs/contracts/ENTITLEMENTS_AND_LIMITS.md`。
