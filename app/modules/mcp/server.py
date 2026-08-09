@@ -22,6 +22,7 @@ from pydantic import Field
 from app.modules.mcp import tools
 from app.modules.mcp.a2ui import A2UIExtension, negotiate_a2ui
 from app.modules.mcp.deps import McpToolEnv
+from app.modules.mcp.quota_middleware import McpToolVisibilityMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "只返回 toolName/arguments/reply，不直接伪造业务结果。"
     ),
     "a2ui_action": "处理 A2UI 白名单只读 Action，返回后续真实 Tool 计划，不直接执行任意工具。",
+    "account_entitlements": "查看当前账号套餐、存储和 MCP/Planner/AI 等额度，不消耗商业调用额度。",
 }
 
 # 远程提示词：眼镜端 LanguageModel 的记账助手指令（工具与提示词均由远程提供，
@@ -117,8 +119,16 @@ async def _call_with_a2ui(
     env: McpToolEnv,
     mcp_ctx: Context,
     fn: Callable[[tools.McpCallContext], Awaitable[object]],
+    *,
+    tool_name: str,
+    idempotency_key: str | None = None,
 ) -> object:
-    return await env.call(fn, a2ui_support=negotiate_a2ui(mcp_ctx.client_capabilities))
+    return await env.call(
+        fn,
+        tool_name=tool_name,
+        idempotency_key=idempotency_key,
+        a2ui_support=negotiate_a2ui(mcp_ctx.client_capabilities),
+    )
 
 
 def build_mcp_server(
@@ -182,7 +192,9 @@ def build_mcp_server(
     _register_moments_count(server, env)
     _register_agent_plan(server, env)
     _register_a2ui_action(server, env)
+    _register_account_entitlements(server, env)
     _register_bookkeeping_prompt(server)
+    server.middleware.append(McpToolVisibilityMiddleware(env))
 
     return server
 
@@ -203,7 +215,10 @@ def _register_bookkeeping_plan(server: MCPServer, env: McpToolEnv) -> None:
             str, Field(description="用户原话（如：上个月花了多少 / 记一笔午餐 28.5 元）")
         ],
     ) -> object:
-        return await env.call(lambda ctx: tools.bookkeeping_plan(ctx, input=input))
+        return await env.call(
+            lambda ctx: tools.bookkeeping_plan(ctx, input=input),
+            tool_name="bookkeeping_plan",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +312,8 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
                 idempotency_key=idempotencyKey,
                 title=title,
             ),
+            tool_name="bookkeeping_create",
+            idempotency_key=idempotencyKey,
         )
 
 
@@ -339,6 +356,7 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
                 category=category,
                 ledger=ledger,
             ),
+            tool_name="bookkeeping_list",
         )
 
 
@@ -396,6 +414,7 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
                 from_=from_,
                 to=to,
             ),
+            tool_name="bookkeeping_summary",
         )
 
 
@@ -436,6 +455,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 from_=from_,
                 to=to,
             ),
+            tool_name="moments_list",
         )
 
     @apps.tool(
@@ -465,6 +485,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 from_=from_,
                 to=to,
             ),
+            tool_name="moments_search",
         )
 
     @apps.tool(
@@ -483,7 +504,10 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         ] = None,
     ) -> object:
         return await _call_with_a2ui(
-            env, mcp_ctx, lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone)
+            env,
+            mcp_ctx,
+            lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone),
+            tool_name="reviews_daily",
         )
 
     @apps.tool(
@@ -497,7 +521,10 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         momentId: Annotated[str, Field(description="Moment ID（UUID）")],
     ) -> object:
         return await _call_with_a2ui(
-            env, mcp_ctx, lambda ctx: tools.moments_get(ctx, moment_id=momentId)
+            env,
+            mcp_ctx,
+            lambda ctx: tools.moments_get(ctx, moment_id=momentId),
+            tool_name="moments_get",
         )
 
     @apps.tool(
@@ -538,7 +565,9 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 moment_type=type,
                 payload=payload,
                 idempotency_key=idempotencyKey,
-            )
+            ),
+            tool_name="moments_create",
+            idempotency_key=idempotencyKey,
         )
 
 
@@ -555,7 +584,10 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         timezone: Annotated[str | None, Field(default=None, description="IANA 时区")] = None,
     ) -> object:
         return await _call_with_a2ui(
-            env, mcp_ctx, lambda ctx: tools.habit_progress(ctx, days=days, timezone_name=timezone)
+            env,
+            mcp_ctx,
+            lambda ctx: tools.habit_progress(ctx, days=days, timezone_name=timezone),
+            tool_name="habit_progress",
         )
 
     @apps.tool(
@@ -565,7 +597,7 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         title="习惯目标列表",
     )
     async def habit_goals_list() -> object:  # pyright: ignore[reportUnusedFunction]
-        return await env.call(tools.habit_goals_list)
+        return await env.call(tools.habit_goals_list, tool_name="habit_goals_list")
 
     @apps.tool(
         resource_uri=HABITS_UI_URI,
@@ -590,7 +622,9 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 times_per_week=timesPerWeek,
                 color=color,
                 idempotency_key=idempotencyKey,
-            )
+            ),
+            tool_name="habit_goal_create",
+            idempotency_key=idempotencyKey,
         )
 
     @apps.tool(
@@ -622,6 +656,8 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 note=note,
                 idempotency_key=idempotencyKey,
             ),
+            tool_name="habit_checkin_create",
+            idempotency_key=idempotencyKey,
         )
 
 
@@ -644,7 +680,8 @@ def _register_moments_count(server: MCPServer, env: McpToolEnv) -> None:
                 category=category,
                 from_=from_,
                 to=to,
-            )
+            ),
+            tool_name="moments_count",
         )
 
 
@@ -669,7 +706,8 @@ def _register_agent_plan(server: MCPServer, env: McpToolEnv) -> None:
                 ctx,
                 input=input,
                 tool_schemas=_registered_tool_schemas(server),
-            )
+            ),
+            tool_name="agent_plan",
         )
 
 
@@ -690,7 +728,21 @@ def _register_a2ui_action(server: MCPServer, env: McpToolEnv) -> None:
                 name=name,
                 context=context,
                 surface_id=surfaceId,
-            )
+            ),
+            tool_name="a2ui_action",
+        )
+
+
+def _register_account_entitlements(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="account_entitlements",
+        description=_TOOL_DESCRIPTIONS["account_entitlements"],
+        title="查看账号额度",
+    )
+    async def account_entitlements() -> object:  # pyright: ignore[reportUnusedFunction]
+        return await env.call(
+            tools.account_entitlements,
+            tool_name="account_entitlements",
         )
 
 

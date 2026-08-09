@@ -625,6 +625,11 @@ class FakeStorage(ObjectStorage):
     ) -> str:
         return f"https://fake-s3.test/download/{user_id}/{asset_id}?expires={expires_in_seconds}"
 
+    def delete_asset_objects(self, *, user_id: str, asset_id: str) -> None:
+        self._objects.pop((user_id, asset_id), None)
+        self._blobs.pop((user_id, asset_id), None)
+        self._thumbnails.pop((user_id, asset_id), None)
+
 
 @pytest.fixture
 def fake_repos() -> dict[str, Any]:

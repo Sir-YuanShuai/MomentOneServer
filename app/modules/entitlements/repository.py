@@ -38,12 +38,11 @@ class EntitlementRepository:
             stmt = stmt.where(PlanDefinition.status == "active")
         return list((await self._session.execute(stmt)).scalars().all())
 
-    async def get_plan(self, plan_key: str) -> PlanDefinition | None:
-        return await self._session.scalar(
-            select(PlanDefinition).where(
-                PlanDefinition.key == plan_key, PlanDefinition.status == "active"
-            )
-        )
+    async def get_plan(self, plan_key: str, *, active_only: bool = True) -> PlanDefinition | None:
+        stmt = select(PlanDefinition).where(PlanDefinition.key == plan_key)
+        if active_only:
+            stmt = stmt.where(PlanDefinition.status == "active")
+        return await self._session.scalar(stmt)
 
     async def ensure_user_defaults(self, user_id: UUID) -> UserStorageAccount:
         account = await self._session.scalar(
@@ -160,7 +159,7 @@ class EntitlementRepository:
         return account
 
     async def max_upload_bytes(self, user_id: UUID) -> int | None:
-        plan = await self.get_plan(await self.current_plan_key(user_id))
+        plan = await self.get_plan(await self.current_plan_key(user_id), active_only=False)
         if plan is None:
             return None
         raw = plan.quotas.get("max_upload_bytes")

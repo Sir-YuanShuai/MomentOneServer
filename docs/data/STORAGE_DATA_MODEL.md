@@ -648,6 +648,11 @@ UNIQUE (user_id, entitlement_key, source_type, source_ref)
 
 ### 5.17 额度计量
 
+> 实现状态（2026-08-09）：`quota_accounts` 与 `quota_usage_events` 已由迁移 0020 实现；
+> 当前接入 MCP Tool、写 Tool、Planner、用户 API 请求、设备数和 MCP 客户端数。
+> `api_usage_buckets` 按 UTC 日聚合路由请求量、错误量和延迟，供管理员趋势分析。
+> 可重建的高性能 `quota_usage_buckets` 留待数据量增长后增加。
+
 #### `quota_accounts`
 
 用户当前额度判断快照：
@@ -688,6 +693,21 @@ metadata jsonb
 #### `quota_usage_buckets`
 
 按用户、额度 Key、周期聚合，供高频检查和后台统计；可由 Usage Event 重建。
+
+#### `api_usage_buckets`
+
+```text
+bucket_start timestamptz
+route varchar(240)
+method varchar(12)
+request_count bigint
+error_count bigint
+latency_ms_total bigint
+updated_at timestamptz
+PRIMARY KEY (bucket_start, route, method)
+```
+
+只保存路由模板和聚合指标，不保存查询参数、请求体、Token 或用户私密内容。
 
 ### 5.18 用户存储账户
 

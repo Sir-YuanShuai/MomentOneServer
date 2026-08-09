@@ -1,10 +1,4 @@
-"""MCP 工具运行环境：身份提取 → 会话 → 执行 → 提交/错误映射。
-
-SDK 通过 `BearerAuthBackend(MomentTokenVerifier)` 把 token 验证结果放到
-contextvar，工具层用 `get_access_token()` 读取（SDK 的 AuthContextMiddleware 负责
-contextvar 注入）。本模块把「身份 + DB 会话 + 错误映射」统一封装，
-工具函数只关心业务逻辑（见 tools.py）。
-"""
+"""MCP 工具运行环境：身份、Scope、Entitlement、Quota、事务与错误映射。"""
 
 from __future__ import annotations
 
@@ -17,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport
+from app.modules.mcp.scope import has_scope
 from app.modules.mcp.tools import McpCallContext, err_result
+from app.modules.quotas.repository import QuotaRepository
+from app.modules.quotas.tool_policy import TOOL_POLICIES
 
 logger = structlog.get_logger()
 
@@ -31,20 +28,52 @@ class McpToolEnv:
         self,
         *,
         session_factory: SessionFactory | None = None,
+        enforce_quotas: bool = True,
     ) -> None:
-        # session_factory 返回 async context manager（async with 使用）
         self._session_factory: SessionFactory = session_factory or _default_session_factory
+        self._enforce_quotas = enforce_quotas
+
+    def session(self) -> AbstractAsyncContextManager[AsyncSession]:
+        return self._session_factory()
+
+    async def visible_tool_names(self, user_id: UUID, scopes: tuple[str, ...]) -> frozenset[str]:
+        if not self._enforce_quotas:
+            return frozenset(
+                name for name, policy in TOOL_POLICIES.items() if has_scope(scopes, policy.scope)
+            )
+        async with self._session_factory() as session:
+            quota_repo = QuotaRepository(session)
+            entitlements = await quota_repo.active_entitlements(user_id)
+            visible: set[str] = set()
+            base_available = await quota_repo.check_available(user_id, "mcp.tool_calls.month")
+            for tool_name, policy in TOOL_POLICIES.items():
+                if not has_scope(scopes, policy.scope):
+                    continue
+                if policy.entitlement and policy.entitlement not in entitlements:
+                    continue
+                if policy.metered and not base_available:
+                    continue
+                if policy.write and not await quota_repo.check_available(
+                    user_id, "mcp.write_calls.month"
+                ):
+                    continue
+                if policy.planner and not await quota_repo.check_available(
+                    user_id, "mcp.agent_plan.day"
+                ):
+                    continue
+                visible.add(tool_name)
+            await session.rollback()
+            return frozenset(visible)
 
     async def call(
         self,
         fn: Callable[[McpCallContext], Awaitable[object]],
         *,
+        tool_name: str,
+        idempotency_key: str | None = None,
         a2ui_support: A2UISupport = A2UI_DISABLED,
     ) -> object:
-        """执行一次工具调用：提取身份 → 开 session → 执行 → 提交。
-
-        返回 CallToolResult（成功或 isError）。任何未捕获异常兜底为 INTERNAL_ERROR。
-        """
+        """执行 Tool：先做 Scope/Entitlement/Quota 判断，再执行业务并统一提交。"""
         from mcp.server.auth.middleware.auth_context import get_access_token
 
         token = get_access_token()
@@ -61,20 +90,78 @@ class McpToolEnv:
 
         scopes = tuple(token.scopes or [])
         claims = token.claims or {}
-        method = claims.get("method", "mcp")
-        actor_id = claims.get("client_id") or claims.get("device_id") or token.client_id
+        method = str(claims.get("method", "mcp"))
+        client_id = claims.get("client_id") or token.client_id
+        device_id = claims.get("device_id")
+        actor_id = client_id or device_id
+        request_id = str(uuid4())
+        policy = TOOL_POLICIES.get(tool_name)
 
         async with self._session_factory() as session:
+            quota_repo = QuotaRepository(session)
             ctx = McpCallContext(
                 user_id=user_id,
                 scopes=scopes,
                 method=method,
-                actor_id=actor_id,
-                request_id=str(uuid4()),
+                actor_id=str(actor_id) if actor_id else None,
+                request_id=request_id,
                 session=session,
                 a2ui=a2ui_support,
             )
             try:
+                if policy is not None:
+                    if not has_scope(scopes, policy.scope):
+                        raise ApplicationError(
+                            code="SCOPE_DENIED",
+                            message=f"Token 缺少 {policy.scope} 权限，无法执行该工具。",
+                            status_code=403,
+                            details={"requiredScope": policy.scope, "scopes": list(scopes)},
+                        )
+                    entitlements = (
+                        await quota_repo.active_entitlements(user_id)
+                        if self._enforce_quotas
+                        else frozenset({policy.entitlement} if policy.entitlement else set())
+                    )
+                    if policy.entitlement and policy.entitlement not in entitlements:
+                        raise ApplicationError(
+                            code="ENTITLEMENT_REQUIRED",
+                            message="当前订阅不包含该工具能力。",
+                            status_code=403,
+                            details={
+                                "toolName": tool_name,
+                                "requiredEntitlement": policy.entitlement,
+                            },
+                        )
+                    if policy.metered and self._enforce_quotas:
+                        operation = f"mcp:{tool_name}:{idempotency_key or request_id}"
+
+                        async def consume(quota_key: str) -> None:
+                            await quota_repo.consume(
+                                user_id,
+                                quota_key,
+                                amount=1,
+                                operation_key=operation,
+                                actor_type=method,
+                                tool_name=tool_name,
+                                client_id=str(client_id) if client_id else None,
+                                device_id=str(device_id) if device_id else None,
+                                idempotency_key=idempotency_key,
+                            )
+
+                        await consume("mcp.tool_calls.month")
+                        if policy.write:
+                            await consume("mcp.write_calls.month")
+                        if policy.planner:
+                            await consume("mcp.agent_plan.day")
+                ctx.available_tools = (
+                    await self._visible_tool_names_in_session(quota_repo, user_id, scopes)
+                    if self._enforce_quotas
+                    else frozenset(
+                        name
+                        for name, item in TOOL_POLICIES.items()
+                        if has_scope(scopes, item.scope)
+                    )
+                )
                 result = await fn(ctx)
                 await session.commit()
                 return result
@@ -83,6 +170,7 @@ class McpToolEnv:
                 await logger.ainfo(
                     "mcp_tool_rejected",
                     code=exc.code,
+                    tool_name=tool_name,
                     user_id=str(user_id),
                     request_id=ctx.request_id,
                 )
@@ -90,9 +178,39 @@ class McpToolEnv:
             except Exception:
                 await session.rollback()
                 await logger.aexception(
-                    "mcp_tool_failed", user_id=str(user_id), request_id=ctx.request_id
+                    "mcp_tool_failed",
+                    tool_name=tool_name,
+                    user_id=str(user_id),
+                    request_id=ctx.request_id,
                 )
                 return err_result("INTERNAL_ERROR", "服务器内部错误，请稍后重试。")
+
+    async def _visible_tool_names_in_session(
+        self,
+        quota_repo: QuotaRepository,
+        user_id: UUID,
+        scopes: tuple[str, ...],
+    ) -> frozenset[str]:
+        entitlements = await quota_repo.active_entitlements(user_id)
+        base_available = await quota_repo.check_available(user_id, "mcp.tool_calls.month")
+        visible: set[str] = set()
+        for name, policy in TOOL_POLICIES.items():
+            if not has_scope(scopes, policy.scope):
+                continue
+            if policy.entitlement and policy.entitlement not in entitlements:
+                continue
+            if policy.metered and not base_available:
+                continue
+            if policy.write and not await quota_repo.check_available(
+                user_id, "mcp.write_calls.month"
+            ):
+                continue
+            if policy.planner and not await quota_repo.check_available(
+                user_id, "mcp.agent_plan.day"
+            ):
+                continue
+            visible.add(name)
+        return frozenset(visible)
 
 
 @asynccontextmanager

@@ -24,6 +24,7 @@ from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import DeviceBinding
 from app.modules.devices.service import DeviceBindingService
 from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
+from app.modules.quotas.repository import QuotaRepository
 
 router = APIRouter(prefix="/v1/device", tags=["devices"])
 
@@ -59,6 +60,7 @@ def _make_service(
         jwt_issuer=jwt_issuer,
         settings=settings,
         authorizations=McpAuthorizationRepository(session),
+        quotas=QuotaRepository(session),
     )
 
 

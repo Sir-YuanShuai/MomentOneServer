@@ -375,3 +375,7 @@ MOMENT_ONE_REFRESH_TOKEN_TTL_SECONDS=2592000
 - **token 黑名单**：Redis 维护撤销的 jti，实现 access_token 即时失效。
 - **设备指纹**：device_id + device_type + user_agent 联合识别异常绑定。
 - **多设备类型**：scope 按设备类型模板化（眼镜、手机、手表默认 scope 不同）。
+
+## 订阅设备额度（已实现，2026-08-09）
+
+完成扫码绑定前，Server 读取当前计划的 `device.active`，按内部 User 统计活跃绑定；达到上限返回 `DEVICE_LIMIT_EXCEEDED`。同一用户对同一设备重新绑定视为替换，不重复占用名额。已有设备不会因为套餐降级被自动撤销，但降级后达到或超过上限时不能新增设备。

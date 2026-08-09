@@ -22,6 +22,7 @@ class User(Base):
     casdoor_user_id: Mapped[str] = mapped_column(String(64), index=True)
     display_name: Mapped[str | None] = mapped_column(String(100))
     email: Mapped[str | None] = mapped_column(String(255))
+    avatar_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="active", server_default="active"
     )

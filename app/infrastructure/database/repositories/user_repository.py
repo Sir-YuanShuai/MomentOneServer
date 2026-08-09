@@ -40,22 +40,28 @@ class UserRepository:
                 status_code=403,
             )
 
+    async def sync_profile(self, user: UserORM, principal: AuthenticatedPrincipal) -> UserORM:
+        if principal.display_name and principal.display_name != user.display_name:
+            user.display_name = principal.display_name
+        if principal.email and principal.email != user.email:
+            user.email = principal.email
+        if principal.avatar_url and principal.avatar_url != user.avatar_url:
+            user.avatar_url = principal.avatar_url
+        await self._session.flush()
+        return user
+
     async def upsert_from_casdoor(
         self, principal: AuthenticatedPrincipal, casdoor_user_id: str
     ) -> UserORM:
         existing = await self.get_by_casdoor_sub(principal.subject)
         if existing:
-            if principal.display_name and principal.display_name != existing.display_name:
-                existing.display_name = principal.display_name
-            if principal.email and principal.email != existing.email:
-                existing.email = principal.email
-            await self._session.flush()
-            return existing
+            return await self.sync_profile(existing, principal)
         new_user = UserORM(
             casdoor_sub=principal.subject,
             casdoor_user_id=casdoor_user_id,
             display_name=principal.display_name,
             email=principal.email,
+            avatar_url=principal.avatar_url,
             status="active",
             revision=1,
         )
@@ -79,6 +85,8 @@ async def resolve_user_id(
         user = await user_repo.upsert_from_casdoor(
             principal.merge_userinfo(userinfo), str(casdoor_user_id)
         )
+    else:
+        user = await user_repo.sync_profile(user, principal)
     UserRepository.ensure_active(user)
     await user_repo.touch_active(user)
     return user.id

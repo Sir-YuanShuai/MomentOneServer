@@ -37,6 +37,7 @@ from app.modules.mcp_oauth.repositories import (
     McpAuthorizationRepository,
     McpClientRepository,
 )
+from app.modules.quotas.repository import QuotaRepository
 
 GRANT_AUTHORIZATION_CODE = "authorization_code"
 GRANT_REFRESH_TOKEN = "refresh_token"
@@ -170,6 +171,7 @@ class MomentOAuthService:
         settings: Settings,
         jwt_issuer: JwtIssuer,
         session: AsyncSession,
+        quotas: QuotaRepository | None = None,
     ) -> None:
         self._settings = settings
         self._jwt_issuer = jwt_issuer
@@ -177,6 +179,7 @@ class MomentOAuthService:
         self._clients = McpClientRepository(session)
         self._codes = McpAuthCodeRepository(session)
         self._authorizations = McpAuthorizationRepository(session)
+        self._quotas = quotas
         self._casdoor = CasdoorProxyClient(settings)
         self._casdoor_verifier = CasdoorTokenVerifier(settings)
 
@@ -393,6 +396,23 @@ class MomentOAuthService:
         )
         # 消费 casdoor_txn
         await self._codes.mark_consumed(code_id=txn.id)
+
+        # 新增 MCP 客户端前检查订阅允许的活跃客户端数量；同一客户端重授权不重复占位。
+        if self._quotas is not None:
+            existing_authorization = await self._authorizations.get_by_user_and_client(
+                user_id, txn.client_id
+            )
+            quota_account = await self._quotas.get_or_create_account(user_id, "mcp.clients.active")
+            replacing_active = (
+                existing_authorization is not None
+                and existing_authorization.status == "active"
+                and existing_authorization.client_type == "mcp"
+            )
+            await self._quotas.require_resource_capacity(
+                user_id,
+                "mcp.clients.active",
+                next_value=quota_account.used_value + (0 if replacing_active else 1),
+            )
 
         # 记录授权关系（Web 端可查看/调整/撤销）
         client = await self._clients.get_by_client_id(txn.client_id)

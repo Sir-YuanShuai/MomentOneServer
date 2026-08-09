@@ -33,6 +33,7 @@ from app.modules.mcp.a2ui import (
     A2UI_VERSION,
     validate_a2ui_messages,
 )
+from app.modules.mcp.deps import McpToolEnv
 from app.modules.mcp.endpoint import McpComponent
 from app.modules.mcp.token_verifier import MomentTokenVerifier
 from app.modules.mcp_oauth.service import derive_code_challenge, generate_code_verifier
@@ -391,7 +392,7 @@ def app(
         settings,
         session_factory=lambda: _binding_session_factory(),  # type: ignore[arg-type]
     )
-    component = McpComponent(settings, verifier=verifier)
+    component = McpComponent(settings, verifier=verifier, env=McpToolEnv(enforce_quotas=False))
     application = create_application(settings, mcp_component=component)
 
     # monkeypatch tools 模块内的 repository 类
@@ -1145,7 +1146,7 @@ async def test_glasses_authorization_scope_is_authoritative(app: FastAPI, tmp_pa
         settings,
         session_factory=lambda: _narrowed_session_factory(),  # type: ignore[arg-type]
     )
-    component = McpComponent(settings, verifier=verifier)
+    component = McpComponent(settings, verifier=verifier, env=McpToolEnv(enforce_quotas=False))
     application = create_application(settings, mcp_component=component)
 
     async with _mcp_client(application) as client:
@@ -1211,7 +1212,7 @@ async def test_glasses_legacy_fallback_to_binding_scope(app: FastAPI, tmp_path: 
         settings,
         session_factory=lambda: _legacy_session_factory(),  # type: ignore[arg-type]
     )
-    component = McpComponent(settings, verifier=verifier)
+    component = McpComponent(settings, verifier=verifier, env=McpToolEnv(enforce_quotas=False))
     application = create_application(settings, mcp_component=component)
 
     async with _mcp_client(application) as client:

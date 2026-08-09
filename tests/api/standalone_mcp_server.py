@@ -172,7 +172,7 @@ def main() -> None:
         component = McpComponent(
             settings,
             verifier=verifier,
-            env=McpToolEnv(session_factory=lambda: _fake_session_factory()),  # type: ignore[arg-type]
+            env=McpToolEnv(session_factory=lambda: _fake_session_factory(), enforce_quotas=False),  # type: ignore[arg-type]
         )
 
         issuer = JwtIssuer(settings)
