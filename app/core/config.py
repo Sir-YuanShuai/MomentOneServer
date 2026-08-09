@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     env: Literal["development", "test", "staging", "production"] = "development"
     debug: bool = False
     log_level: str = "INFO"
+    build_version: str = "0.1.0"
+    build_commit: str = "unknown"
+    build_time: str | None = None
     api_prefix: str = "/v1"
     allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
@@ -26,6 +29,12 @@ class Settings(BaseSettings):
     casdoor_issuer: HttpUrl | None = None
     casdoor_audience: str | None = None
     casdoor_jwks_url: HttpUrl | None = None
+    casdoor_admin_roles: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["momentone-admin"]
+    )
+    casdoor_operator_roles: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["momentone-operator"]
+    )
 
     # 眼镜端 JWT 自签发（QR Binding 授权）
     jwt_private_key_path: str | None = None
@@ -70,6 +79,13 @@ class Settings(BaseSettings):
     def parse_allowed_origins(cls, value: object) -> object:
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator("casdoor_admin_roles", "casdoor_operator_roles", mode="before")
+    @classmethod
+    def parse_role_names(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     @field_validator("mcp_scopes_supported", mode="before")

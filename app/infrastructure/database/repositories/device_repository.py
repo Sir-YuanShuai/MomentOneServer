@@ -163,6 +163,7 @@ class SqlDeviceBindingRepository:
             return
         orm.refresh_token_hash = refresh_token_hash
         orm.last_active_at = last_active_at
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
 
     async def revoke(self, *, binding_id: UUID, revoked_at: datetime) -> None:
@@ -174,6 +175,7 @@ class SqlDeviceBindingRepository:
         orm.status = BindingStatus.REVOKED.value
         orm.revoked_at = revoked_at
         orm.refresh_token_hash = None
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
 
     async def update_scope(self, *, binding_id: UUID, scope: tuple[str, ...]) -> DeviceBinding:
@@ -181,6 +183,7 @@ class SqlDeviceBindingRepository:
         result = await self._session.execute(stmt)
         orm = result.scalar_one()
         orm.scope = list(scope)
+        orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return _binding_to_domain(orm)
 

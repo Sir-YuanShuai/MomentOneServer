@@ -1,6 +1,6 @@
 # MomentOneServer — 实现进度
 
-> 文档状态：Current  |  更新日期：2026-08-08
+> 文档状态：Current  |  更新日期：2026-08-09
 >
 > 本文件记录**当前已实现的代码、表和 API**，是高频更新的"现状快照"。
 > 目标设计见 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md)，
@@ -23,10 +23,15 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | casdoor_user_id | VARCHAR(64), INDEX | Casdoor 用户 UUID |
 | display_name | VARCHAR(100) | 显示名称（从 Casdoor 同步） |
 | email | VARCHAR(255) | 邮箱（从 Casdoor 同步） |
+| status | VARCHAR(16), INDEX | `active` / `disabled`，所有认证通道统一检查 |
+| revision | INTEGER | 管理操作乐观锁版本 |
+| last_active_at | TIMESTAMPTZ | 最近业务访问时间（5 分钟节流更新） |
+| disabled_at | TIMESTAMPTZ | 停用时间 |
+| disable_reason | VARCHAR(240) | 脱敏的停用原因 |
 | created_at | TIMESTAMPTZ | 创建时间 |
 | updated_at | TIMESTAMPTZ | 更新时间 |
 
-> **目标差异**：目标设计中 `casdoor_sub` / `casdoor_user_id` 将迁移到独立的 `user_identities` 表，`users` 表增加 `status` 列。
+> **目标差异**：`status` 已实现；`casdoor_sub` / `casdoor_user_id` 仍待迁移到独立的 `user_identities` 表。
 
 ### moments
 
@@ -154,6 +159,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | `0010_add_persons_and_event` | moments 表新增 persons / event_name 两列（通用描述维度，ADR-0019） |
 | `0011_add_frequency_and_color_to_habit_goals` | habit_goals 表新增 frequency / times_per_week / color 列（对标习惯打卡 App，ADR-0020） |
 | `0012_create_mcp_oauth_tables` | 创建 mcp_oauth_clients / mcp_oauth_codes 表（MCP OAuth DCR 客户端 + 授权码/事务状态） |
+| `0018_add_admin_operations_fields` | users 增加状态/版本/活动时间，device_bindings 与 mcp_authorizations 增加 revision |
 
 ## 已实现的模块
 
@@ -162,14 +168,15 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Moment 领域 | `app/modules/moments/` | 已实现 |
 | 内置记录类型注册表 | `app/modules/moment_types/` + `contracts/types/*.schema.json` | 已实现（bookkeeping / habit / general；validate(type, payload) 按 JSON Schema 校验） |
 | 习惯目标（HabitGoal） | `app/modules/habit_goals/` + `app/infrastructure/database/repositories/habit_goal_repository.py` + `app/api/routes/habit_goals.py` | 已实现（CRUD + 两阶段删除；打卡 payload.goalId 归属校验） |
-| Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现 |
+| Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现（Casdoor isAdmin / 应用角色 / 权限归一化；暂停账号全通道阻断） |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
 | MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；通用 Moment 创建/列表/搜索/计数/详情；每日回顾；习惯目标/打卡/进度；`agent_plan`；`a2ui_action`；工具级 Scope + 审计；A2UI v0.9 自动化测试与 MomentOneGlasses 实际客户端连接 standalone 联调已通过，待真机 AIUI 页面联调后提交/部署） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
 | MCP Apps UI | `mcp_apps/bookkeeping/`（Vite 多入口单文件构建，`@modelcontextprotocol/ext-apps`） | 已实现 3 个紧凑结果卡：`bookkeeping` / `timeline` / `habits`；卡片只渲染本次 tool 的 structuredContent，不在 UI 内提供搜索表单或主动拉取数据 |
 | A2UI over MCP | `app/modules/mcp/a2ui.py` + `contracts/a2ui/` | 已实现 Server 侧 v0.9 capability negotiation、官方 Schema/Catalog 固定、9 个紧凑结果卡 builder、校验失败文本降级与标准 Tool Result fixture；实际眼镜客户端代码 standalone 联调已通过，未提交/未部署，等待真机 AIUI 页面联调 |
-| Audit | `app/modules/audit/` | 骨架 |
+| Admin Operations | `app/modules/admin/` + `app/api/routes/admin.py` | 已实现（概览、用户、设备/MCP 授权、审计、过期记录 Preview + Confirm） |
+| Audit | `app/modules/audit/` | 已实现只追加写入与管理员只读查询 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
 | Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）） |
 
@@ -202,3 +209,13 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | 习惯目标 API 测试 | `tests/api/test_habit_goals_api.py` | 已实现（CRUD + revision 冲突 + 两阶段删除） |
 | 打卡 goalId 关联测试 | `tests/api/test_moments_api.py` | 已实现（合法 / 未知 / 非法格式 goalId） |
 | Assets API 测试 | `tests/api/test_assets_api.py` | 已实现（upload-intents / complete / get / download-url + Moment 创建/更新媒体集成 + 附件替换/保留/清空 + 缩略图生成/降级/URL 签发） |
+
+## 已完成设计、待实现（订阅/身份，2026-08-09）
+
+- 订阅权益：Casdoor 管余额/订单/支付/订阅，Server 管 Entitlement、Quota 和执行；
+- 建议 Free/Plus/Pro 存储为 1/10/50 GiB，MCP/眼镜共享 Tool、写 Tool、Planner、设备和客户端额度；
+- 存储引入 used/reserved/effectiveQuota、Upload Reservation 和 Bucket 对账；
+- MCP `tools/list` 与 `agent_plan` 目标按 Scope + Entitlement + Quota 过滤；A2UI/Text/structuredContent 不重复计量；
+- 账号关联目标让 `user_identities` 接管认证，增加 Link Session、解绑 Preview/Confirm、User Merge；
+- 账号合并时迁移数据、设备、MCP、存储和权益，默认免费 Grant 不能重复领取；
+- 详细文档：`docs/domain/IDENTITY_ACCOUNT_LINKING.md`、`docs/data/STORAGE_DATA_MODEL.md`、根目录 `docs/contracts/ENTITLEMENTS_AND_LIMITS.md`。

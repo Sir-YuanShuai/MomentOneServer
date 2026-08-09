@@ -54,8 +54,20 @@ pending_confirmations
 ```text
 sync_cursors
 sync_change_log
-oauth_clients
-access_grants
+identity_link_sessions
+user_merge_operations
+user_merge_redirects
+plan_definitions
+product_entitlement_mappings
+external_orders
+billing_events
+user_entitlements
+quota_accounts
+quota_usage_buckets
+quota_usage_events
+user_storage_accounts
+storage_quota_grants
+storage_reconciliation_runs
 agent_connections
 ai_artifacts
 search_embeddings
@@ -87,6 +99,10 @@ erDiagram
       varchar status
       text display_name
       text email
+      integer revision
+      timestamptz last_active_at
+      timestamptz disabled_at
+      text disable_reason
       timestamptz created_at
       timestamptz updated_at
     }
@@ -167,9 +183,13 @@ erDiagram
 | 列 | 推荐类型 | Null | 说明 |
 |---|---|---:|---|
 | `id` | `uuid` | 否 | 主键 |
-| `status` | `varchar(32)` | 否 | `active/disabled/deleting/deleted` |
+| `status` | `varchar(32)` | 否 | `active/disabled/merging/merged/deleting/deleted` |
+| `revision` | `integer` | 否 | 管理操作乐观锁版本，初始为 1 |
 | `display_name` | `text` | 是 | 展示资料 |
 | `email` | `text` | 是 | 资料字段，不作为身份主键 |
+| `last_active_at` | `timestamptz` | 是 | 最近业务访问时间，允许节流更新 |
+| `disabled_at` | `timestamptz` | 是 | 应用访问被停用的时间 |
+| `disable_reason` | `varchar(240)` | 是 | 脱敏的管理原因，不存私密正文 |
 | `created_at` | `timestamptz` | 否 | 服务端时间 |
 | `updated_at` | `timestamptz` | 否 | 服务端时间 |
 
@@ -178,6 +198,8 @@ erDiagram
 ```text
 PRIMARY KEY (id)
 CHECK status IN (...)
+CHECK revision >= 1
+INDEX (status)
 ```
 
 不建议默认对 email 加唯一约束，因为身份提供方、大小写和账号合并规则尚未冻结。
@@ -192,14 +214,24 @@ CHECK status IN (...)
 | `user_id` | `uuid` | 否 | FK -> users.id |
 | `issuer` | `text` | 否 | 标准化后的 OIDC issuer |
 | `subject` | `text` | 否 | OIDC `sub` |
+| `provider` | `varchar(32)` | 否 | `casdoor/google/apple/github/wechat/phone/email/...` |
+| `provider_account_id` | `text` | 是 | Provider 稳定账号 ID，若可用 |
+| `display_name` | `text` | 是 | 资料快照 |
+| `email` | `text` | 是 | 资料快照，不作为合并依据 |
+| `email_verified` | `boolean` | 否 | 来自已验证 Claim |
+| `status` | `varchar(16)` | 否 | `active/unlinked/disabled` |
+| `revision` | `integer` | 否 | 乐观锁版本 |
 | `created_at` | `timestamptz` | 否 | 首次映射时间 |
+| `linked_at` | `timestamptz` | 否 | 当前关联建立时间 |
 | `last_seen_at` | `timestamptz` | 否 | 最近认证时间 |
+| `unlinked_at` | `timestamptz` | 是 | 解绑时间 |
 
 关键约束：
 
 ```text
 UNIQUE (issuer, subject)
-INDEX (user_id)
+CHECK revision >= 1
+INDEX (user_id, status)
 ```
 
 ### 5.3 `moments`
@@ -477,7 +509,7 @@ deleted_at timestamptz                  -- Tombstone，删除后历史打卡记�
 | `device_id` | `text` | 否 | REFERENCES devices(id) |
 | `scope` | `text[]` | 否 | 授权范围（如 `{moments.read, moments.write}`） |
 | `status` | `varchar(16)` | 否 | `active` / `revoked` / `expired` |
-| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，滚动续期 90 天） |
+| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，固定 30 天、不滚动） |
 | `bound_at` | `timestamptz` | 否 | 绑定时间 |
 | `last_active_at` | `timestamptz` | 是 | 最后活跃时间 |
 | `revoked_at` | `timestamptz` | 是 | 撤销时间 |
@@ -527,6 +559,199 @@ OAuth 授权服务器代理（authorize/token/register 在 MomentOneServer 侧�
 | `status` | `varchar(16)` | 否 | `pending` / `consumed` |
 | `expires_at` | `timestamptz` | 否 | 授权码/事务过期时间（默认 10 分钟） |
 | `created_at` | `timestamptz` | 否 | 创建时间 |
+
+### 5.15 身份关联与合并
+
+详细流程见 `docs/domain/IDENTITY_ACCOUNT_LINKING.md`。
+
+#### `identity_link_sessions`
+
+短期绑定事务，保存目标 User、Provider、state 哈希、加密 PKCE verifier、状态和过期时间。原始 state、Token、Provider 凭据不得落库。
+
+```text
+id uuid PK
+user_id uuid FK
+provider varchar(32)
+state_hash text UNIQUE
+pkce_verifier_ciphertext text
+status varchar(16)
+expires_at timestamptz
+created_at timestamptz
+completed_at timestamptz NULL
+metadata jsonb
+```
+
+#### `user_merge_operations`
+
+重复内部用户的 Preview + Confirm + 后台合并状态。必须记录 source/surviving User、Revision、阶段 checkpoint、幂等键、发起人、审核人和稳定错误码。
+
+#### `user_merge_redirects`
+
+```text
+merged_user_id uuid PRIMARY KEY
+surviving_user_id uuid FK
+merge_operation_id uuid FK
+created_at timestamptz
+```
+
+### 5.16 计划、权益与商品映射
+
+#### `plan_definitions`
+
+```text
+key varchar(64) PRIMARY KEY
+version integer
+name text
+status active/retired
+entitlements jsonb
+quotas jsonb
+created_at/updated_at timestamptz
+```
+
+计划定义是版本化配置，不直接保存用户现金余额。
+
+#### `product_entitlement_mappings`
+
+```text
+id uuid PK
+provider varchar(32)          # casdoor
+external_product_id text
+external_plan_id text NULL
+plan_key varchar(64) NULL
+entitlement_key varchar(128) NULL
+quota_key varchar(128) NULL
+quota_amount bigint NULL
+duration_seconds bigint NULL
+status active/disabled
+revision integer
+UNIQUE (provider, external_product_id)
+```
+
+#### `user_entitlements`
+
+```text
+id uuid PK
+user_id uuid FK
+entitlement_key varchar(128)
+source_type default/admin/order/subscription/promotion
+source_ref text
+status active/expired/revoked
+starts_at/expires_at timestamptz
+metadata jsonb
+revision integer
+UNIQUE (user_id, entitlement_key, source_type, source_ref)
+```
+
+### 5.17 额度计量
+
+#### `quota_accounts`
+
+用户当前额度判断快照：
+
+```text
+user_id uuid
+quota_key varchar(128)
+limit_value bigint
+used_value bigint
+reserved_value bigint
+period_start/period_end timestamptz NULL
+revision integer
+updated_at timestamptz
+PRIMARY KEY (user_id, quota_key, period_start)
+```
+
+非周期资源额度（如活跃设备数）允许 period 为空；周期额度按日/月建立 Bucket。
+
+#### `quota_usage_events`
+
+只追加的计量事实：
+
+```text
+id uuid PK
+user_id uuid FK
+quota_key varchar(128)
+amount bigint
+operation_key text
+actor_type varchar(24)
+device_id/client_id/tool_name text NULL
+idempotency_key text NULL
+occurred_at timestamptz
+metadata jsonb
+```
+
+同一业务操作必须有稳定 `operation_key`，防止 REST/MCP 重试重复计量。
+
+#### `quota_usage_buckets`
+
+按用户、额度 Key、周期聚合，供高频检查和后台统计；可由 Usage Event 重建。
+
+### 5.18 用户存储账户
+
+#### `user_storage_accounts`
+
+```text
+user_id uuid PRIMARY KEY
+used_bytes bigint
+reserved_bytes bigint
+effective_quota_bytes bigint
+over_quota boolean
+revision integer
+reconciled_at timestamptz NULL
+updated_at timestamptz
+CHECK used_bytes >= 0
+CHECK reserved_bytes >= 0
+CHECK effective_quota_bytes >= 0
+```
+
+Upload Intent 在同一事务中锁定该行并增加 reserved；complete 按对象实际大小从 reserved 转入 used。
+
+#### `storage_quota_grants`
+
+```text
+id uuid PK
+user_id uuid FK
+source_type default/admin/order/subscription/promotion
+source_ref text
+quota_bytes bigint
+status active/expired/revoked
+starts_at/expires_at timestamptz
+revision integer
+created_at/updated_at timestamptz
+UNIQUE (user_id, source_type, source_ref)
+```
+
+默认免费 Grant 在账号合并时最多保留一份；订单 Grant 按外部订单 ID 去重。
+
+#### `storage_reconciliation_runs`
+
+记录 PostgreSQL Asset、Bucket Inventory 与账户计数的对账批次、差异数量和修复结果。
+
+### 5.19 外部订单与计费事件
+
+#### `external_orders`
+
+Casdoor Order/Payment/Subscription 的最小只读投影。金额使用 decimal + currency；不保存支付凭据，不作为现金余额事实源。
+
+#### `billing_events`
+
+Webhook 收件与处理状态：
+
+```text
+id uuid PK
+provider varchar(32)
+external_event_id text
+external_order_id text NULL
+event_type varchar(64)
+status received/verified/applied/failed/ignored
+payload_hash text
+sanitized_payload jsonb
+attempt_count integer
+last_error_code text NULL
+created_at/processed_at timestamptz
+UNIQUE (provider, external_event_id)
+```
+
+Webhook 只作为触发器；权益发放前必须由 Server 向 Casdoor 二次确认订单、支付或订阅状态。
 
 ## 6. PostgreSQL 与 MinIO 的对应关系
 
@@ -662,7 +887,12 @@ SELECT confirmation FOR UPDATE
 6. `user_configs`；
 7. `devices`、`device_bindings`；
 8. `pending_confirmations`；
-9. 索引、约束和数据清理任务。
+9. `identity_link_sessions`、`user_merge_operations`、`user_merge_redirects`；
+10. `plan_definitions`、`product_entitlement_mappings`、`user_entitlements`；
+11. `quota_accounts`、`quota_usage_events`、`quota_usage_buckets`；
+12. `user_storage_accounts`、`storage_quota_grants`、`storage_reconciliation_runs`；
+13. `external_orders`、`billing_events`；
+14. 索引、约束和数据清理任务。
 
 每次 migration 必须满足：
 
@@ -685,4 +915,8 @@ SELECT confirmation FOR UPDATE
 - idempotency record 保留时间；
 - Tombstone、历史 Revision 和审计保留策略；
 - Location 和 Emotion 的最终 JSON Schema；
-- 是否允许客户端生成 Moment UUID 的客户端类型和校验规则。
+- 是否允许客户端生成 Moment UUID 的客户端类型和校验规则；
+- Free/Plus/Pro 的最终额度值、计费周期和宽限期；
+- 存储对账频率、过期 Upload Reservation TTL；
+- Casdoor Product/Plan/Order 的稳定映射 Key；
+- User Merge 是否首期仅限管理员审核。
