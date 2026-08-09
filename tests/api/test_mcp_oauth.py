@@ -275,6 +275,7 @@ def app(tmp_path: Path, fakes: dict[str, Any]) -> Iterator[FastAPI]:
 
     application.dependency_overrides[get_settings] = lambda: settings
     application.dependency_overrides[mcp_oauth_routes.get_db_session] = _fake_session
+    application.dependency_overrides[mcp_oauth_routes.get_quota_repository] = lambda: None
 
     yield application
 

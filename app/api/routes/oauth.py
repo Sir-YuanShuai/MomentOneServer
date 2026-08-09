@@ -28,6 +28,7 @@ from app.modules.mcp_oauth.service import (
     GRANT_AUTHORIZATION_CODE,
     MomentOAuthService,
 )
+from app.modules.quotas.repository import QuotaRepository
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -51,15 +52,25 @@ def _make_service(
         jwt_issuer=jwt_issuer,
         settings=settings,
         authorizations=McpAuthorizationRepository(session),
+        quotas=QuotaRepository(session),
     )
+
+
+def get_quota_repository(
+    session: AsyncSession = Depends(get_db_session),
+) -> QuotaRepository | None:
+    return QuotaRepository(session)
 
 
 def _make_mcp_oauth_service(
     settings: Settings = Depends(get_settings),
     jwt_issuer: JwtIssuer = Depends(_get_jwt_issuer),
     session: AsyncSession = Depends(get_db_session),
+    quotas: QuotaRepository | None = Depends(get_quota_repository),
 ) -> MomentOAuthService:
-    return MomentOAuthService(settings=settings, jwt_issuer=jwt_issuer, session=session)
+    return MomentOAuthService(
+        settings=settings, jwt_issuer=jwt_issuer, session=session, quotas=quotas
+    )
 
 
 class TokenResponse(BaseModel):

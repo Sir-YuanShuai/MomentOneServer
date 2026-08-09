@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -6,7 +7,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, Header, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,9 +21,12 @@ from app.infrastructure.database.repositories.idempotency_repository import (
 )
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.storage.object_storage import ObjectStorageNotConfigured, S3ObjectStorage
+from app.modules.admin.account import AccountRepository
+from app.modules.admin.analytics import AdminAnalyticsRepository
 from app.modules.admin.auth import AdminContext, get_admin_context
 from app.modules.admin.domain import AdminAuditEvent, AdminAuthorization, AdminBinding, AdminUser
 from app.modules.admin.entitlements import AdminEntitlementRepository
+from app.modules.admin.plans import AdminPlanRepository
 from app.modules.admin.repository import AdminRepository
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -75,6 +79,48 @@ class ReconcileStorageRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=240)
 
 
+class CreatePlanRequest(BaseModel):
+    planKey: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    name: str = Field(min_length=1, max_length=120)
+    status: str = Field(default="active", pattern="^(active|retired)$")
+    entitlements: dict[str, bool] = Field(default_factory=dict)
+    quotas: dict[str, StrictInt] = Field(default_factory=dict)
+    reason: str | None = Field(default=None, max_length=240)
+
+    @field_validator("quotas")
+    @classmethod
+    def validate_quotas(cls, value: dict[str, int]) -> dict[str, int]:
+        for key, amount in value.items():
+            if not key or len(key) > 128 or isinstance(amount, bool) or amount < 0:
+                raise ValueError("额度 key 必须有效，且额度值必须为非负整数。")
+        return value
+
+
+class UpdatePlanRequest(BaseModel):
+    expectedVersion: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    status: str | None = Field(default=None, pattern="^(active|retired)$")
+    entitlements: dict[str, bool] | None = None
+    quotas: dict[str, StrictInt] | None = None
+    reason: str | None = Field(default=None, max_length=240)
+
+    @field_validator("quotas")
+    @classmethod
+    def validate_quotas(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return None
+        for key, amount in value.items():
+            if not key or len(key) > 128 or isinstance(amount, bool) or amount < 0:
+                raise ValueError("额度 key 必须有效，且额度值必须为非负整数。")
+        return value
+
+    @model_validator(mode="after")
+    def require_change(self) -> "UpdatePlanRequest":
+        if all(value is None for value in (self.name, self.status, self.entitlements, self.quotas)):
+            raise ValueError("至少需要提供一个计划变更字段。")
+        return self
+
+
 def _admin_repo(session: AsyncSession = Depends(get_db_session)) -> AdminRepository:
     return AdminRepository(session)
 
@@ -83,6 +129,20 @@ def _admin_entitlement_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> AdminEntitlementRepository:
     return AdminEntitlementRepository(session)
+
+
+def _account_repo(session: AsyncSession = Depends(get_db_session)) -> AccountRepository:
+    return AccountRepository(session)
+
+
+def _analytics_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminAnalyticsRepository:
+    return AdminAnalyticsRepository(session)
+
+
+def _plan_repo(session: AsyncSession = Depends(get_db_session)) -> AdminPlanRepository:
+    return AdminPlanRepository(session)
 
 
 def _user_dict(user: AdminUser) -> dict[str, object]:
@@ -280,6 +340,16 @@ async def overview(
     return data
 
 
+@router.get("/usage/overview")
+async def usage_overview(
+    days: int = Query(default=30, ge=1, le=90),
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminAnalyticsRepository = Depends(_analytics_repo),
+) -> dict[str, object]:
+    admin.require("admin.read")
+    return await repo.usage_overview(days=days)
+
+
 @router.get("/users", response_model=PageResponse)
 async def list_users(
     admin: AdminContext = Depends(get_admin_context),
@@ -296,6 +366,19 @@ async def list_users(
     return PageResponse(
         items=[_user_dict(item) for item in items], hasMore=has_more, nextCursor=next_cursor
     )
+
+
+@router.get("/users/{user_id}/detail")
+async def user_detail(
+    user_id: UUID,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AccountRepository = Depends(_account_repo),
+) -> dict[str, object]:
+    admin.require("admin.users")
+    detail = await repo.admin_user_detail(user_id)
+    if detail is None:
+        raise ApplicationError(code="USER_NOT_FOUND", message="用户不存在。", status_code=404)
+    return detail
 
 
 @router.patch("/users/{user_id}/status")
@@ -482,26 +565,110 @@ async def revoke_authorization(
 @router.get("/plans")
 async def list_plans(
     admin: AdminContext = Depends(get_admin_context),
-    session: AsyncSession = Depends(get_db_session),
+    repo: AdminPlanRepository = Depends(_plan_repo),
 ) -> dict[str, object]:
     admin.require("admin.read")
-    from app.modules.entitlements.repository import EntitlementRepository
+    return {"items": await repo.list_plans()}
 
-    plans = await EntitlementRepository(session).list_plans(active_only=False)
-    return {
-        "items": [
-            {
-                "key": item.key,
-                "version": item.version,
-                "name": item.name,
-                "status": item.status,
-                "entitlements": item.entitlements,
-                "quotas": item.quotas,
-                "updatedAt": item.updated_at.isoformat(),
-            }
-            for item in plans
-        ]
-    }
+
+@router.post("/plans", status_code=201)
+async def create_plan(
+    body: CreatePlanRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminPlanRepository = Depends(_plan_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    payload = body.model_dump(mode="json")
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_create_plan",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    plan = await repo.create(
+        key=body.planKey,
+        name=body.name,
+        status=body.status,
+        entitlements=body.entitlements,
+        quotas=body.quotas,
+    )
+    if plan is None:
+        raise ApplicationError(
+            code="PLAN_ALREADY_EXISTS",
+            message="相同 key 的订阅计划已存在。",
+            status_code=409,
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.plan.created",
+        resource_type="plan_definition",
+        resource_id=None,
+        allowed=True,
+        reason=body.reason,
+        metadata={"planKey": body.planKey, "version": plan["version"]},
+    )
+    await idem.complete(record_id=record.id, response_status=201, response_body=plan)
+    return plan
+
+
+@router.patch("/plans/{plan_key}")
+async def update_plan(
+    plan_key: str,
+    body: UpdatePlanRequest,
+    admin: AdminContext = Depends(get_admin_context),
+    repo: AdminPlanRepository = Depends(_plan_repo),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict[str, object]:
+    admin.require("admin.operations")
+    if not re.fullmatch(r"[a-z0-9_-]{1,64}", plan_key):
+        raise ApplicationError(
+            code="INVALID_REQUEST", message="订阅计划 key 无效。", status_code=400
+        )
+    payload = {"planKey": plan_key, **body.model_dump(mode="json")}
+    idem, record = await _idempotency(
+        session=session,
+        admin=admin,
+        operation="admin_update_plan",
+        key=idempotency_key,
+        payload=payload,
+    )
+    if record.state == "completed" and record.response_body:
+        return record.response_body
+    plan = await repo.update(
+        key=plan_key,
+        expected_version=body.expectedVersion,
+        name=body.name,
+        status=body.status,
+        entitlements=body.entitlements,
+        quotas=body.quotas,
+    )
+    if plan is None:
+        actual = await repo.version(plan_key)
+        raise ApplicationError(
+            code="REVISION_CONFLICT" if actual is not None else "PLAN_NOT_FOUND",
+            message="订阅计划不存在或版本已变化。",
+            status_code=409 if actual is not None else 404,
+            details={"actualVersion": actual},
+        )
+    await _audit(
+        session,
+        admin,
+        event_type="admin.plan.updated",
+        resource_type="plan_definition",
+        resource_id=None,
+        allowed=True,
+        reason=body.reason,
+        metadata={"planKey": plan_key, "version": plan["version"]},
+    )
+    await idem.complete(record_id=record.id, response_status=200, response_body=plan)
+    return plan
 
 
 @router.get("/storage/summary")
@@ -739,10 +906,16 @@ async def list_audit_events(
     eventType: str | None = Query(default=None, max_length=120),
     allowed: bool | None = None,
     actorType: str | None = Query(default=None, max_length=24),
+    query: str | None = Query(default=None, max_length=160),
 ) -> PageResponse:
     admin.require("admin.security")
     items, more, next_cursor = await repo.list_audit_events(
-        limit=limit, cursor=cursor, event_type=eventType, allowed=allowed, actor_type=actorType
+        limit=limit,
+        cursor=cursor,
+        event_type=eventType,
+        allowed=allowed,
+        actor_type=actorType,
+        query=query,
     )
     return PageResponse(
         items=[_audit_dict(item) for item in items], hasMore=more, nextCursor=next_cursor

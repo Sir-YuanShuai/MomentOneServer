@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,7 @@ class AuthContext:
     binding_id: UUID | None = None
     client_id: str | None = None
     scope: tuple[str, ...] | None = None
+    issued_at: int | None = None
 
 
 def _get_casdoor_verifier(settings: Settings = Depends(get_settings)) -> CasdoorTokenVerifier:
@@ -88,6 +89,7 @@ async def _verify_server_issued_token(
             method="mcp",
             client_id=payload.get("client_id"),
             scope=scope,
+            issued_at=payload.get("iat") if isinstance(payload.get("iat"), int) else None,
         )
 
     # 眼镜端 QR Binding token：必须带 binding_id
@@ -118,10 +120,12 @@ async def _verify_server_issued_token(
         device_id=device_id,
         binding_id=binding_uuid,
         scope=scope,
+        issued_at=payload.get("iat") if isinstance(payload.get("iat"), int) else None,
     )
 
 
 async def get_auth_context(
+    request: Request,
     settings: Settings = Depends(get_settings),
     casdoor_verifier: CasdoorTokenVerifier = Depends(_get_casdoor_verifier),
     jwt_issuer: JwtIssuer = Depends(_get_jwt_issuer),
@@ -144,11 +148,22 @@ async def get_auth_context(
     issuer = _peek_issuer(token)
 
     if issuer == jwt_issuer.issuer:
-        return await _verify_server_issued_token(token, jwt_issuer, session)
+        context = await _verify_server_issued_token(token, jwt_issuer, session)
+        request.state.auth_user_id = context.user_id
+        request.state.auth_method = context.method
+        request.state.auth_client_id = context.client_id
+        request.state.auth_device_id = context.device_id
+        return context
 
     # Casdoor OIDC 路径
+    principal = casdoor_verifier.verify(token)
     user_id = await resolve_user_id(session, casdoor_verifier, token)
-    return AuthContext(user_id=user_id, method="casdoor")
+    context = AuthContext(user_id=user_id, method="casdoor", issued_at=principal.issued_at)
+    request.state.auth_user_id = context.user_id
+    request.state.auth_method = context.method
+    request.state.auth_client_id = None
+    request.state.auth_device_id = None
+    return context
 
 
 async def get_authenticated_user_id(

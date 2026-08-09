@@ -379,6 +379,7 @@ class AdminRepository:
         event_type: str | None,
         allowed: bool | None,
         actor_type: str | None,
+        query: str | None = None,
     ) -> tuple[list[AdminAuditEvent], bool, str | None]:
         stmt = select(AuditEvent).order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
         if event_type:
@@ -387,6 +388,19 @@ class AdminRepository:
             stmt = stmt.where(AuditEvent.allowed == allowed)
         if actor_type:
             stmt = stmt.where(AuditEvent.actor_type == actor_type)
+        term = query.strip() if query else ""
+        if term:
+            pattern = f"%{term}%"
+            stmt = stmt.where(
+                or_(
+                    AuditEvent.event_type.ilike(pattern),
+                    AuditEvent.actor_id.ilike(pattern),
+                    AuditEvent.request_id.ilike(pattern),
+                    AuditEvent.resource_type.ilike(pattern),
+                    AuditEvent.reason.ilike(pattern),
+                    AuditEvent.metadata_["reason"].astext.ilike(pattern),
+                )
+            )
         condition = _cursor_filter(AuditEvent, cursor, AuditEvent.created_at)
         if condition is not None:
             stmt = stmt.where(condition)

@@ -84,6 +84,8 @@ class ObjectStorage(Protocol):
         expires_in_seconds: int,
     ) -> str: ...
 
+    def delete_asset_objects(self, *, user_id: str, asset_id: str) -> None: ...
+
 
 class S3ObjectStorage:
     """S3 / MinIO 兼容适配器（基于 boto3）。"""
@@ -163,6 +165,14 @@ class S3ObjectStorage:
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=expires_in_seconds,
             HttpMethod="GET",
+        )
+
+    def delete_asset_objects(self, *, user_id: str, asset_id: str) -> None:
+        original = build_storage_key(UUID(user_id), UUID(asset_id))
+        thumbnail = build_storage_key(UUID(user_id), UUID(asset_id), "thumbnail")
+        self._client.delete_objects(
+            Bucket=self._bucket,
+            Delete={"Objects": [{"Key": original}, {"Key": thumbnail}], "Quiet": True},
         )
 
     def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes:

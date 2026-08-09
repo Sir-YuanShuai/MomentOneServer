@@ -35,6 +35,7 @@ from app.modules.mcp.scope import (
     normalize_scope_names,
 )
 from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
+from app.modules.quotas.repository import QuotaRepository
 
 
 def _hash_token(token: str) -> str:
@@ -56,6 +57,7 @@ class DeviceBindingService:
         jwt_issuer: JwtIssuer,
         settings: Settings,
         authorizations: McpAuthorizationRepository,
+        quotas: QuotaRepository | None = None,
     ) -> None:
         self._bindings = bindings
         self._codes = codes
@@ -64,6 +66,7 @@ class DeviceBindingService:
         self._settings = settings
         # 统一授权记录：眼镜设备即 MCP 客户端的一种（client_type="glasses"）
         self._authorizations = authorizations
+        self._quotas = quotas
 
     async def create_binding_session(
         self,
@@ -126,6 +129,19 @@ class DeviceBindingService:
                 message="此设备已绑定到其他账号。",
                 status_code=409,
             )
+        if self._quotas is not None:
+            account = await self._quotas.get_or_create_account(code.user_id, "device.active")
+            replacing_active = (
+                existing is not None
+                and existing.user_id == code.user_id
+                and existing.status == BindingStatus.ACTIVE
+            )
+            await self._quotas.require_resource_capacity(
+                code.user_id,
+                "device.active",
+                next_value=account.used_value + (0 if replacing_active else 1),
+            )
+
         # 同一用户重复绑定：撤销旧 binding，允许重新绑定
         if existing is not None and existing.user_id == code.user_id:
             await self._bindings.revoke(binding_id=existing.id, revoked_at=_now())

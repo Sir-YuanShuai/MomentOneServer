@@ -1,6 +1,6 @@
 # 管理后台：存储与权益运维
 
-> 状态：第一批已实现（2026-08-09）  
+> 状态：第一、二批已实现（2026-08-09）
 > 权限：读取需要 `admin.read`，写操作需要 `admin.operations`
 
 ## 能力范围
@@ -44,3 +44,25 @@ POST  /v1/admin/users/{userId}/storage/reconcile
 2. `tools/list`、`agent_plan` 权益感知与设备/MCP 用量后台；
 3. 身份 Link / Unlink / Merge；
 4. Casdoor Product/Order/Payment/Subscription 投影和对账。
+
+
+## 第二批：用量与动态订阅
+
+- 管理员可创建、编辑、停用订阅计划；计划修改会同步当前订阅者的能力和基础存储额度；
+- 管理概览提供今日活跃、月活、API 请求/错误、MCP/写 Tool/Planner/AI Token 趋势；
+- 用户详情提供订阅、存储、近 30 日活跃天数和用量来源；
+- 审计支持 eventType、actorType、allowed 和关键字组合过滤；
+- 普通用户通过 `/v1/account` 查看自己的套餐、存储和调用额度。
+
+## 账号页与注销
+
+普通用户通过 `GET /v1/account` 查看自己的头像、套餐、存储和额度，不显示数据库、容器或服务依赖概念。头像和密码修改进入 Casdoor `/account`。
+
+永久注销使用：
+
+```text
+POST /v1/account/delete-preview
+POST /v1/account/delete-confirm
+```
+
+Confirm 要求输入“永久注销”、`Idempotency-Key` 和最近 5 分钟内重新验证的 Casdoor Token。

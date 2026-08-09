@@ -81,6 +81,7 @@ class McpCallContext:
     request_id: str
     session: AsyncSession
     a2ui: A2UISupport = A2UI_DISABLED
+    available_tools: frozenset[str] | None = None
 
     def require_scope(self, required: str) -> None:
         if not has_scope(self.scopes, required):
@@ -1541,6 +1542,41 @@ async def habit_progress(
     return _tool_result(ctx, "habit_progress", result)
 
 
+async def account_entitlements(ctx: McpCallContext) -> CallToolResult:
+    """返回当前用户套餐与额度；该只读工具本身不消耗商业调用额度。"""
+    ctx.require_scope("moments.read")
+    from app.modules.entitlements.repository import EntitlementRepository
+    from app.modules.quotas.repository import QuotaRepository
+
+    entitlements = EntitlementRepository(ctx.session)
+    storage = await entitlements.locked_account(ctx.user_id)
+    quota_accounts = await QuotaRepository(ctx.session).ensure_current_accounts(ctx.user_id)
+    return _text_result(
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "planKey": await entitlements.current_plan_key(ctx.user_id),
+            "storage": {
+                "usedBytes": storage.used_bytes,
+                "reservedBytes": storage.reserved_bytes,
+                "effectiveQuotaBytes": storage.effective_quota_bytes,
+                "overQuota": storage.over_quota,
+            },
+            "quotas": [
+                {
+                    "key": item.quota_key,
+                    "limit": item.limit_value,
+                    "used": item.used_value,
+                    "reserved": item.reserved_value,
+                    "remaining": max(0, item.limit_value - item.used_value - item.reserved_value),
+                    "periodStart": item.period_start.isoformat(),
+                    "periodEnd": item.period_end.isoformat() if item.period_end else None,
+                }
+                for item in quota_accounts
+            ],
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # 通用工具规划与 A2UI Action
 # ---------------------------------------------------------------------------
@@ -1579,6 +1615,8 @@ def _validate_planned_tool(
     required_scope = _TOOL_SCOPE.get(tool_name)
     if required_scope and not has_scope(ctx.scopes, required_scope):
         return _plan_none(f"当前授权缺少 {required_scope}，无法执行这个操作。")
+    if ctx.available_tools is not None and tool_name not in ctx.available_tools:
+        return _plan_none("当前订阅、授权或剩余额度暂时不能执行这个工具。")
     validator = Draft202012Validator(
         tool_schemas[tool_name],
         format_checker=FormatChecker(),

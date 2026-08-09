@@ -38,6 +38,8 @@ class AuthenticatedPrincipal:
     audience: str | None = None
     email: str | None = None
     display_name: str | None = None
+    avatar_url: str | None = None
+    issued_at: int | None = None
     is_admin: bool = False
     roles: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
@@ -51,6 +53,11 @@ class AuthenticatedPrincipal:
             display_name=self.display_name
             or _string_claim(userinfo.get("name"))
             or _string_claim(userinfo.get("displayName")),
+            avatar_url=self.avatar_url
+            or _string_claim(userinfo.get("picture"))
+            or _string_claim(userinfo.get("avatar"))
+            or _string_claim(userinfo.get("avatarUrl")),
+            issued_at=self.issued_at,
             is_admin=self.is_admin
             or _claim_bool(userinfo.get("isAdmin"))
             or _claim_bool(userinfo.get("is_admin")),
@@ -120,6 +127,12 @@ class CasdoorTokenVerifier:
                 email=_string_claim(payload.get("email")),
                 display_name=_string_claim(payload.get("name"))
                 or _string_claim(payload.get("preferred_username")),
+                avatar_url=_string_claim(payload.get("picture"))
+                or _string_claim(payload.get("avatar"))
+                or _string_claim(payload.get("avatarUrl")),
+                issued_at=(lambda value: value if isinstance(value, int) else None)(
+                    payload.get("iat")
+                ),
                 is_admin=_claim_bool(payload.get("isAdmin"))
                 or _claim_bool(payload.get("is_admin")),
                 roles=_claim_names(payload.get("roles")),

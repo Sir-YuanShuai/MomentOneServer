@@ -132,6 +132,9 @@ class _UnconfiguredStorage:
         self._raise()
         raise AssertionError  # pragma: no cover
 
+    def delete_asset_objects(self, *, user_id: str, asset_id: str) -> None:
+        self._raise()
+
 
 # ---------- 请求/响应模型 ----------
 
