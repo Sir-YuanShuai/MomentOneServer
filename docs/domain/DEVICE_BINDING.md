@@ -20,7 +20,7 @@ Moment One 三端架构：
 
 1. **零 Casdoor 依赖**：眼镜端只持有 Server 签发的 JWT，不接触 Casdoor。
 2. **可撤销**：用户可在 Web 端随时撤销某台设备的访问权。
-3. **滚动续期**：access_token 短期、refresh_token 长期，刷新时滚动续期，无需重新扫码。
+3. **固定期限刷新**：access_token 短期、refresh_token 固定 30 天；刷新只更换 access_token，不延长 refresh_token。
 4. **MCP 兼容**：access_token 同时是未来 MCP Server 的 bearer，一套密钥两端通用。
 5. **最小暴露面**：binding_code 一次性、5 分钟过期；私钥只在 Server 内存在。
 
@@ -86,7 +86,7 @@ Moment One 三端架构：
 | claims | `sub`, `iss`, `aud`, `iat`, `nbf`, `exp`, `jti`, `scope`, `binding_id`, `device_id` |
 
 `scope` 是空格分隔字符串，如 `moments.read moments.write`。
-`jti` 是 UUID，写入 `device_bindings.access_token_jti`，用于防重放和滚动续期判定。
+`jti` 是 UUID，用于 Token 唯一标识和后续防重放扩展。
 
 > **权限管理（MCP 式）**：scope 命名与 MCP 工具一致（`moments.read` / `moments.write` /
 > `moments.delete`，点号分隔）。历史冒号命名（`moments:read`）在边界处自动规范化
@@ -106,7 +106,7 @@ Moment One 三端架构：
 
 refresh_token 不带 `scope`，刷新时 scope 以 `device_bindings.scope` 为准（用户可在 Web 端调 PATCH 改 scope）。
 
-### 3.3 滚动续期
+### 3.3 Access Token 刷新（Refresh Token 不滚动）
 
 每次 `refresh_token` 换新 access_token 时：
 

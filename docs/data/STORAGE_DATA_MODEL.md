@@ -509,7 +509,7 @@ deleted_at timestamptz                  -- Tombstone，删除后历史打卡记�
 | `device_id` | `text` | 否 | REFERENCES devices(id) |
 | `scope` | `text[]` | 否 | 授权范围（如 `{moments.read, moments.write}`） |
 | `status` | `varchar(16)` | 否 | `active` / `revoked` / `expired` |
-| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，滚动续期 90 天） |
+| `refresh_token_hash` | `varchar(128)` | 是 | Refresh Token 哈希（不存明文，固定 30 天、不滚动） |
 | `bound_at` | `timestamptz` | 否 | 绑定时间 |
 | `last_active_at` | `timestamptz` | 是 | 最后活跃时间 |
 | `revoked_at` | `timestamptz` | 是 | 撤销时间 |
