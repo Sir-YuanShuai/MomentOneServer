@@ -204,6 +204,8 @@ async def test_casdoor_unlink_provider_clears_oauth_properties_with_user_token(
         access_token="user-token",
     )
 
+    assert calls[0]["path"] == "/api/get-user"
+    assert calls[0]["access_token"] == "user-token"
     update_call = calls[-1]
     assert update_call["path"] == "/api/update-user"
     assert update_call["access_token"] == "user-token"
