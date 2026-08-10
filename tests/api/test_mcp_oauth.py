@@ -219,6 +219,86 @@ async def test_casdoor_unlink_provider_clears_oauth_properties_with_user_token(
     assert props["oauth_Gitee_id"] == "gitee-id"
 
 
+@pytest.mark.asyncio
+async def test_casdoor_upload_avatar_persists_avatar_with_user_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_json_request(
+        self: CasdoorManagementClient,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str | int | bool] | None = None,
+        data: dict[str, str | int | bool] | None = None,
+        json: dict[str, object] | None = None,
+        access_token: str | None = None,
+    ) -> object:
+        del self, data
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "params": params,
+                "json": json,
+                "access_token": access_token,
+            }
+        )
+        if path == "/api/get-user":
+            return {
+                "owner": "yuanshuai.fun",
+                "name": "moment-user",
+                "id": "casdoor-user-id",
+                "avatar": "",
+            }
+        return {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"status": "ok", "data": "https://cdn.example/avatar.png"}
+
+    class FakeHttpClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeHttpClient:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, *_args: object, **_kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(CasdoorManagementClient, "_json_request", fake_json_request)
+    monkeypatch.setattr(
+        "app.infrastructure.identity.casdoor_management.httpx.AsyncClient",
+        FakeHttpClient,
+    )
+    client = CasdoorManagementClient(_make_settings(tmp_path))
+
+    avatar = await client.upload_avatar(
+        "casdoor-user-id",
+        filename="avatar.png",
+        content_type="image/png",
+        content=b"image",
+        access_token="user-token",
+    )
+
+    assert avatar == "https://cdn.example/avatar.png"
+    assert calls[0]["path"] == "/api/get-user"
+    assert calls[0]["access_token"] == "user-token"
+    update_call = calls[-1]
+    assert update_call["path"] == "/api/update-user"
+    assert update_call["access_token"] == "user-token"
+    assert update_call["json"]["avatar"] == "https://cdn.example/avatar.png"
+
+
 class _FakeExecResult:
     def scalar_one_or_none(self) -> None:
         return None
