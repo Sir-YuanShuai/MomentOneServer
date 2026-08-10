@@ -31,14 +31,44 @@ def _claim_bool(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
 
 
+def _claim_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes"}:
+            return True
+        if normalized in {"0", "false", "no"}:
+            return False
+    return None
+
+
+def _first_claim_bool(*values: object) -> bool | None:
+    for value in values:
+        parsed = _claim_optional_bool(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _prefer_userinfo_claim(current: bool | None, *values: object) -> bool | None:
+    parsed = _first_claim_bool(*values)
+    return current if parsed is None else parsed
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedPrincipal:
     issuer: str
     subject: str
     audience: str | None = None
     email: str | None = None
+    phone: str | None = None
+    email_verified: bool | None = None
+    phone_verified: bool | None = None
     display_name: str | None = None
     avatar_url: str | None = None
+    username: str | None = None
+    owner: str | None = None
     issued_at: int | None = None
     is_admin: bool = False
     roles: tuple[str, ...] = ()
@@ -50,6 +80,17 @@ class AuthenticatedPrincipal:
             subject=self.subject,
             audience=self.audience,
             email=self.email or _string_claim(userinfo.get("email")),
+            phone=self.phone or _string_claim(userinfo.get("phone")),
+            email_verified=_prefer_userinfo_claim(
+                self.email_verified,
+                userinfo.get("emailVerified"),
+                userinfo.get("email_verified"),
+            ),
+            phone_verified=_prefer_userinfo_claim(
+                self.phone_verified,
+                userinfo.get("phoneVerified"),
+                userinfo.get("phone_verified"),
+            ),
             display_name=self.display_name
             or _string_claim(userinfo.get("name"))
             or _string_claim(userinfo.get("displayName")),
@@ -57,6 +98,8 @@ class AuthenticatedPrincipal:
             or _string_claim(userinfo.get("picture"))
             or _string_claim(userinfo.get("avatar"))
             or _string_claim(userinfo.get("avatarUrl")),
+            username=self.username or _string_claim(userinfo.get("name")),
+            owner=self.owner or _string_claim(userinfo.get("owner")),
             issued_at=self.issued_at,
             is_admin=self.is_admin
             or _claim_bool(userinfo.get("isAdmin"))
@@ -81,6 +124,22 @@ class CasdoorTokenVerifier:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+
+    @property
+    def required_organization(self) -> str | None:
+        organization = (self._settings.casdoor_organization or "").strip()
+        return organization or None
+
+    def ensure_organization(self, principal: AuthenticatedPrincipal) -> None:
+        organization = self.required_organization
+        if not organization or principal.owner == organization:
+            return
+        raise ApplicationError(
+            code="IDENTITY_ORGANIZATION_MISMATCH",
+            message="请使用 Moment One 所属组织账号重新登录。",
+            status_code=401,
+            details={"expectedOrganization": organization},
+        )
 
     def _ensure_jwks_client(self) -> PyJWKClient:
         now = time.monotonic()
@@ -125,6 +184,13 @@ class CasdoorTokenVerifier:
                 subject=str(sub),
                 audience=audience,
                 email=_string_claim(payload.get("email")),
+                phone=_string_claim(payload.get("phone")),
+                email_verified=_first_claim_bool(
+                    payload.get("email_verified"), payload.get("emailVerified")
+                ),
+                phone_verified=_first_claim_bool(
+                    payload.get("phone_verified"), payload.get("phoneVerified")
+                ),
                 display_name=_string_claim(payload.get("name"))
                 or _string_claim(payload.get("preferred_username")),
                 avatar_url=_string_claim(payload.get("picture"))
@@ -168,10 +234,27 @@ class CasdoorTokenVerifier:
             data = resp.json()
             return data if isinstance(data, dict) else {}
 
+    async def fetch_account(self, access_token: str) -> dict[str, object]:
+        account_url = f"{str(self._settings.casdoor_issuer).rstrip('/')}/api/get-account"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                account_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict) or payload.get("status") != "ok":
+                return {}
+            data = payload.get("data")
+            return data if isinstance(data, dict) else {}
+
 
 __all__ = [
     "AuthenticatedPrincipal",
     "CasdoorTokenVerifier",
     "_claim_bool",
+    "_claim_optional_bool",
+    "_first_claim_bool",
+    "_prefer_userinfo_claim",
     "_claim_names",
 ]

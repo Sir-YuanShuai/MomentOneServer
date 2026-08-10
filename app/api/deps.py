@@ -39,6 +39,9 @@ class AuthContext:
     client_id: str | None = None
     scope: tuple[str, ...] | None = None
     issued_at: int | None = None
+    # 用户自己的 Casdoor access token（仅 method == "casdoor" 时有值）。
+    # 账号中心用它直连 Casdoor /api/* 做用户自助操作，而不是用超管应用凭据。
+    raw_access_token: str | None = None
 
 
 def _get_casdoor_verifier(settings: Settings = Depends(get_settings)) -> CasdoorTokenVerifier:
@@ -158,7 +161,12 @@ async def get_auth_context(
     # Casdoor OIDC 路径
     principal = casdoor_verifier.verify(token)
     user_id = await resolve_user_id(session, casdoor_verifier, token)
-    context = AuthContext(user_id=user_id, method="casdoor", issued_at=principal.issued_at)
+    context = AuthContext(
+        user_id=user_id,
+        method="casdoor",
+        issued_at=principal.issued_at,
+        raw_access_token=token,
+    )
     request.state.auth_user_id = context.user_id
     request.state.auth_method = context.method
     request.state.auth_client_id = None

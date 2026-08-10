@@ -23,6 +23,22 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(100))
     email: Mapped[str | None] = mapped_column(String(255))
     avatar_url: Mapped[str | None] = mapped_column(Text)
+    phone: Mapped[str | None] = mapped_column(String(32))
+    email_verified: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
+    phone_verified: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
+    locale: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="zh-CN", server_default="zh-CN"
+    )
+    timezone: Mapped[str | None] = mapped_column(String(64))
+    profile_sync_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="local_only", server_default="local_only"
+    )
+    profile_sync_error: Mapped[str | None] = mapped_column(Text)
+    profile_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="active", server_default="active"
     )

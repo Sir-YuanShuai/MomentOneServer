@@ -59,9 +59,44 @@ class AccountRepository:
             "profile": {
                 "displayName": user.display_name,
                 "email": user.email,
+                "phone": user.phone,
+                "emailVerified": user.email_verified,
+                "phoneVerified": user.phone_verified,
                 "avatarUrl": avatar_url or local_avatar,
+                "locale": user.locale,
+                "timezone": user.timezone,
+                "syncStatus": user.profile_sync_status,
+                "syncError": user.profile_sync_error,
+                "syncedAt": user.profile_synced_at.isoformat() if user.profile_synced_at else None,
+                "revision": user.revision,
             },
-            "plan": self._plan_dict(plan, fallback_key=plan_key),
+            "plan": {
+                **self._plan_dict(plan, fallback_key=plan_key),
+                "sourceType": next(
+                    (
+                        item.source_type
+                        for item in effective_entitlements
+                        if item.entitlement_key == f"plan:{plan_key}"
+                    ),
+                    "default",
+                ),
+                "startsAt": next(
+                    (
+                        item.starts_at.isoformat()
+                        for item in effective_entitlements
+                        if item.entitlement_key == f"plan:{plan_key}"
+                    ),
+                    None,
+                ),
+                "expiresAt": next(
+                    (
+                        item.expires_at.isoformat() if item.expires_at else None
+                        for item in effective_entitlements
+                        if item.entitlement_key == f"plan:{plan_key}"
+                    ),
+                    None,
+                ),
+            },
             "storage": {
                 "usedBytes": account.used_bytes,
                 "reservedBytes": account.reserved_bytes,

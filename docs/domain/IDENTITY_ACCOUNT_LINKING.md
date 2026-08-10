@@ -206,3 +206,25 @@ cash balance: 不在本地合并，由 Casdoor 处理
 - [存储数据模型](../data/STORAGE_DATA_MODEL.md)
 - 跨项目身份契约：`../../../docs/domain/IDENTITY_AND_ACCOUNT_LINKING.md`
 - 跨项目权益契约：`../../../docs/contracts/ENTITLEMENTS_AND_LIMITS.md`
+
+## 13. P1/P2 第一版实现（2026-08-09）
+
+已实现：
+
+- 认证主路径优先读取 `user_identities (issuer, subject)`，旧 `users.casdoor_sub` 仅作兼容回退并自动补写；
+- Moment One 内修改显示名称、头像和密码，不再要求进入 Casdoor 账号后台；
+- 邮箱/手机号 Challenge + Confirm，Casdoor 负责发送和校验验证码；
+- `GET /v1/account/identities` 登录方式与 MFA 摘要；
+- `POST /v1/account/link-sessions` + PKCE，复用 `/oauth/callback` 完成第二 Casdoor 身份验证；
+- 已占用身份返回 Merge Required，不静默抢占；
+- Unlink Preview + Confirm，禁止解除最后一个 OIDC 登录身份；
+- `GET /v1/account/merge-preview` 返回两侧套餐、存储、设备、MCP 和近 30 日用量预览；
+- Profile/Contact 写操作带 `Idempotency-Key`，资料更新带 `expectedRevision`；
+- 用户资料同步状态为 `local_only / pending / synced / failed`，Casdoor 暂时不可用时保留本地修改并明确提示。
+
+尚未实现：
+
+- 自动执行 User Merge；第一版只提供冲突和 Merge Preview；
+- Casdoor 全量会话列表及远程会话撤销；当前设备/MCP 会话仍由 Moment One 管理；
+- MFA 开通/关闭；第一版只展示 Casdoor MFA 状态；
+- 钱包、充值和订单账本，继续按独立财务批次实施。

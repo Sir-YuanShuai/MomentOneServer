@@ -17,6 +17,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import ApplicationError
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.jwt.issuer import JwtIssuer
+from app.modules.accounts.service import AccountCenterService
 from app.modules.mcp_oauth.service import MomentOAuthService
 from app.modules.quotas.repository import QuotaRepository
 
@@ -31,6 +32,13 @@ def get_quota_repository(
     session: AsyncSession = Depends(get_db_session),
 ) -> QuotaRepository | None:
     return QuotaRepository(session)
+
+
+def _make_account_center_service(
+    settings: Settings = Depends(get_settings),
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountCenterService:
+    return AccountCenterService(session, settings)
 
 
 def _make_service(
@@ -128,12 +136,16 @@ async def authorize(
 @router.get("/callback")
 async def casdoor_callback(
     service: MomentOAuthService = Depends(_make_service),
+    account_center: AccountCenterService = Depends(_make_account_center_service),
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
 ) -> RedirectResponse:
     """Casdoor 登录回调：换 token → 识别用户 → 签发我方授权码 → 302 回客户端（RFC 6749 §4.1.2）。"""
+    if state and await account_center.has_link_state(state):
+        url = await account_center.complete_link_session(state=state, code=code, error=error)
+        return RedirectResponse(url, status_code=302)
     if error:
         url = await service.handle_casdoor_callback(code=code or "", state=state or "", error=error)
         return RedirectResponse(url, status_code=302)
@@ -144,6 +156,15 @@ async def casdoor_callback(
             status_code=400,
         )
     url = await service.handle_casdoor_callback(code=code, state=state)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/link-return", include_in_schema=False)
+async def account_link_return(
+    account_center: AccountCenterService = Depends(_make_account_center_service),
+    state: str | None = None,
+) -> RedirectResponse:
+    url = await account_center.complete_provider_link_session(state=state)
     return RedirectResponse(url, status_code=302)
 
 

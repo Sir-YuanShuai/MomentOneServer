@@ -949,3 +949,25 @@ SELECT confirmation FOR UPDATE
 - 存储对账频率、过期 Upload Reservation TTL；
 - Casdoor Product/Plan/Order 的稳定映射 Key；
 - User Merge 是否首期仅限管理员审核。
+
+### Account Center P1/P2 扩展（迁移 0021）
+
+`users` 增加：
+
+- `phone`、`email_verified`、`phone_verified`；
+- `locale`、`timezone`；
+- `profile_sync_status`、`profile_sync_error`、`profile_synced_at`。
+
+`user_identities` 增加：
+
+- `identity_type`：`oidc/email/phone/provider`；
+- `provider`、`identifier`、`display_name`；
+- `status`、`is_primary`、`verified_at`；
+- `metadata`、`revision`、`updated_at`。
+
+新增：
+
+- `account_link_sessions`：第二身份 PKCE 绑定事务和冲突状态；
+- `contact_verification_challenges`：邮箱/手机号验证码事务，保存原值、期望 revision 和回滚信息。
+
+`(issuer, subject)` 继续保持全局唯一；邮箱和手机号分别使用 `issuer=email/phone` 的规范化 Subject。账号删除通过 `users.id ON DELETE CASCADE` 清理上述数据。

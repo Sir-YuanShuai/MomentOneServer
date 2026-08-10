@@ -226,3 +226,18 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 - 账号关联目标让 `user_identities` 接管认证，增加 Link Session、解绑 Preview/Confirm、User Merge；
 - 账号合并时迁移数据、设备、MCP、存储和权益，默认免费 Grant 不能重复领取；
 - 详细文档：`docs/domain/IDENTITY_ACCOUNT_LINKING.md`、`docs/data/STORAGE_DATA_MODEL.md`、根目录 `docs/contracts/ENTITLEMENTS_AND_LIMITS.md`。
+
+## 2026-08-09 — Account Center P1/P2
+
+- [x] 多级用户设置架构：资料、登录安全、订阅、用量、连接、偏好、隐私
+- [x] Moment One 内修改显示名称、头像和密码
+- [x] 邮箱/手机号验证码绑定
+- [x] `user_identities` 接管认证读取并兼容回填旧账号
+- [x] OIDC Link Session + PKCE + 冲突检测
+- [x] Identity Unlink Preview + Confirm
+- [x] Account Merge Preview（不自动执行合并）
+- [x] 套餐会员凭证和周期/资源额度分组展示
+- [x] 账号资料同步状态、MFA 摘要和 no-store 账号快照
+- [ ] User Merge 后台异步执行
+- [ ] Casdoor 会话撤销与 MFA 写操作
+- [ ] Wallet / Order / Subscription 财务投影
