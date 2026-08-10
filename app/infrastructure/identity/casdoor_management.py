@@ -353,7 +353,7 @@ class CasdoorManagementClient:
                 message="暂不支持该登录方式。",
                 status_code=400,
             )
-        user = await self.get_user(casdoor_user_id)
+        user = await self.get_user(casdoor_user_id, access_token=access_token)
         raw_props = user.get("properties")
         props = raw_props if isinstance(raw_props, dict) else {}
         user["properties"] = {
