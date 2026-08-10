@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     casdoor_management_client_id: str | None = None
     casdoor_management_client_secret: str | None = None
     casdoor_organization: str | None = None
-    casdoor_application: str | None = None
+    # Casdoor 应用显示名与应用实体 ID 分开配置：
+    # MomentOne 的应用名是 MomentOne，应用实体 ID 是 admin/MomentOne；
+    # 用户组织仍然是 yuanshuai.fun，不能拿组织名拼应用 ID。
+    casdoor_application: str | None = "MomentOne"
+    casdoor_application_id: str | None = "admin/MomentOne"
     account_link_redirect_uri: str | None = None
     web_base_url: str = "http://localhost:3000"
 

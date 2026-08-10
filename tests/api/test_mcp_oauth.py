@@ -101,6 +101,14 @@ def test_casdoor_account_link_authorize_url_forces_login_without_provider_param(
     assert "provider" not in params
 
 
+def test_casdoor_application_id_is_not_user_organization(tmp_path: Path) -> None:
+    settings = _make_settings(tmp_path)
+    client = CasdoorManagementClient(settings)
+
+    assert client.application_name == "MomentOne"
+    assert client.application_id == "admin/MomentOne"
+
+
 @pytest.mark.asyncio
 async def test_casdoor_provider_link_url_uses_link_method(
     tmp_path: Path,

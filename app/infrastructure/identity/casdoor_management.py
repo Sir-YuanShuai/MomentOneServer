@@ -77,6 +77,22 @@ class CasdoorManagementClient:
             or ""
         )
 
+    @property
+    def application_name(self) -> str:
+        """返回 Casdoor 应用名，不包含创建应用的 owner。"""
+        configured = str(self._settings.casdoor_application or "").strip()
+        if "/" in configured:
+            configured = configured.rsplit("/", 1)[-1]
+        return configured or "MomentOne"
+
+    @property
+    def application_id(self) -> str:
+        """返回 Casdoor 应用实体 ID（owner/name）。"""
+        configured = str(self._settings.casdoor_application_id or "").strip()
+        if configured:
+            return configured
+        return f"admin/{self.application_name}"
+
     def _require(self, *, application: bool = False) -> None:
         if not self.configured:
             raise ApplicationError(
@@ -164,12 +180,9 @@ class CasdoorManagementClient:
         return data
 
     async def get_application(self) -> dict[str, object]:
-        app_id = (
-            f"{self._settings.casdoor_organization}/{self._settings.casdoor_application}"
-            if self._settings.casdoor_organization and self._settings.casdoor_application
-            else "admin/MomentOne"
+        data = await self._json_request(
+            "GET", "/api/get-application", params={"id": self.application_id}
         )
-        data = await self._json_request("GET", "/api/get-application", params={"id": app_id})
         if not isinstance(data, dict):
             raise ApplicationError(
                 code="IDENTITY_APPLICATION_NOT_FOUND",
@@ -211,7 +224,7 @@ class CasdoorManagementClient:
                 status_code=503,
             )
 
-        application_name = str(application.get("name") or "MomentOne")
+        application_name = str(application.get("name") or self.application_name)
         if application.get("isShared"):
             application_name = f"{application_name}-org-{application.get('organization')}"
         redirect_origin = str(application.get("forcedRedirectOrigin") or self._issuer).rstrip("/")
@@ -384,7 +397,7 @@ class CasdoorManagementClient:
         user = await self.get_user(casdoor_user_id, access_token=access_token)
         owner = str(user.get("owner") or self._settings.casdoor_organization or "")
         name = str(user.get("name") or "")
-        application = str(self._settings.casdoor_application or user.get("signupApplication") or "")
+        application = self.application_name
         if not owner or not name or not application:
             raise ApplicationError(
                 code="IDENTITY_VERIFICATION_NOT_CONFIGURED",

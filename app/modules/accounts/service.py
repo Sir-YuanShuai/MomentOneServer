@@ -376,7 +376,9 @@ class AccountCenterService:
                 kind=kind,
                 destination=destination,
                 country_code=country_code,
-                application_id=f"{organization}/{application}",
+                # Casdoor 的 applicationId 是应用实体 ID（owner/name），
+                # 不是用户所属组织/应用名；例如 admin/MomentOne。
+                application_id=self._casdoor.application_id,
             )
         except ApplicationError:
             await self._restore_contact(user, challenge, access_token=access_token)
