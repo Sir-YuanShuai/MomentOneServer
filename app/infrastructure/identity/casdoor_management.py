@@ -279,6 +279,26 @@ class CasdoorManagementClient:
             status_code=503,
         )
 
+    @staticmethod
+    def _application_storage_provider(application: dict[str, object]) -> str:
+        providers = application.get("providers")
+        if not isinstance(providers, list):
+            providers = []
+        for item in providers:
+            if not isinstance(item, dict):
+                continue
+            provider = item.get("provider")
+            if not isinstance(provider, dict) or provider.get("category") != "Storage":
+                continue
+            name = str(item.get("name") or provider.get("name") or "").strip()
+            if name:
+                return name
+        raise ApplicationError(
+            code="IDENTITY_STORAGE_NOT_CONFIGURED",
+            message="MomentOne 应用尚未配置头像存储服务。",
+            status_code=503,
+        )
+
     async def find_user(
         self,
         *,
@@ -412,11 +432,14 @@ class CasdoorManagementClient:
                 message="Casdoor 用户缺少组织或应用信息。",
                 status_code=503,
             )
+        application_config = await self.get_application()
+        storage_provider = self._application_storage_provider(application_config)
         suffix = Path(filename).suffix.lower() or ".jpg"
         params = {
             "owner": owner,
             "user": name,
             "application": application,
+            "provider": storage_provider,
             "tag": "avatar",
             "parent": "",
             "fullFilePath": f"avatars/{name}{suffix}",
