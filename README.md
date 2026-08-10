@@ -207,9 +207,10 @@ CI 当前不调用远程 Casdoor 或 MinIO/S3，也不需要相关真实 Secret�
    MOMENT_ONE_CASDOOR_ISSUER=https://auth.your-domain.com
    MOMENT_ONE_CASDOOR_AUDIENCE=moment-one-api
    MOMENT_ONE_CASDOOR_JWKS_URL=https://auth.your-domain.com/.well-known/jwks.json
-   # 可选：账号中心读取第三方登录绑定的只读管理凭据；未配置时使用用户 Token
-   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID=
-   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET=
+   # 第三方账号绑定必需：只读获取 MomentOne 应用配置并核验绑定结果。
+   # 自动部署会从同名 GitHub Secrets 同步这两项。
+   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID=你的Casdoor应用ClientId
+   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET=你的Casdoor应用ClientSecret
 
    # MinIO / S3
    MOMENT_ONE_S3_ENDPOINT_URL=https://storage.your-domain.com
@@ -233,8 +234,12 @@ CI 当前不调用远程 Casdoor 或 MinIO/S3，也不需要相关真实 Secret�
 | `SERVER_PORT` | SSH 端口 | `22` |
 | `SERVER_SSH_KEY` | SSH 私钥（完整内容，含 BEGIN/END 行） | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
 | `SERVER_DEPLOY_PATH` | 服务器部署目录绝对路径 | `/opt/moment-one` |
+| `MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID` | MomentOne Casdoor 应用 Client ID，用于只读获取应用与用户绑定状态 | Casdoor 应用凭据 |
+| `MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET` | MomentOne Casdoor 应用 Client Secret | Casdoor 应用凭据 |
 
 SSH 密钥建议专门为部署生成一对（`ssh-keygen -t ed25519 -f ~/.ssh/moment_one_deploy`），公钥追加到服务器 `~/.ssh/authorized_keys`，私钥粘贴到 `SERVER_SSH_KEY`。
+
+部署工作流会在重启容器前，将两项 Casdoor 管理凭据原子更新到服务器部署目录的 `.env`；值不会写入仓库或工作流日志。其他生产配置仍由服务器侧 `.env` 管理。
 
 ### 首次部署
 

@@ -174,14 +174,31 @@ jobs:
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1
+        env:
+          MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID: ${{ secrets.MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID }}
+          MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET: ${{ secrets.MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID,MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET
           script: |
             set -euo pipefail
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
+            : "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID:?Missing Casdoor management client ID}"
+            : "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET:?Missing Casdoor management client secret}"
+            sync_env_secret() {
+              key="$1"
+              value="$2"
+              temporary="$(mktemp .env.XXXXXX)"
+              grep -v "^${key}=" .env > "${temporary}"
+              printf '%s=%s\n' "${key}" "${value}" >> "${temporary}"
+              chmod 600 "${temporary}"
+              mv "${temporary}" .env
+            }
+            sync_env_secret MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID}"
+            sync_env_secret MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET}"
             for attempt in 1 2 3 4 5; do
               if docker compose -f compose.prod.yml pull api; then
                 break
