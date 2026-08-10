@@ -65,10 +65,10 @@ class UserRepository:
         assign("email", principal.email)
         assign("phone", principal.phone)
         assign("avatar_url", principal.avatar_url)
-        if principal.email_verified:
-            user.email_verified = True
-        if principal.phone_verified:
-            user.phone_verified = True
+        if principal.email_verified is not None:
+            user.email_verified = principal.email_verified
+        if principal.phone_verified is not None:
+            user.phone_verified = principal.phone_verified
         await self._session.flush()
         return user
 
@@ -108,8 +108,8 @@ class UserRepository:
             display_name=principal.display_name,
             email=principal.email,
             phone=principal.phone,
-            email_verified=principal.email_verified,
-            phone_verified=principal.phone_verified,
+            email_verified=bool(principal.email_verified),
+            phone_verified=bool(principal.phone_verified),
             avatar_url=principal.avatar_url,
             status="active",
             revision=1,

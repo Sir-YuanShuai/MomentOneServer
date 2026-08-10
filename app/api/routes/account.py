@@ -93,6 +93,32 @@ def _login_providers(casdoor_user: dict[str, object]) -> list[dict[str, str]]:
     return login_providers_from_casdoor(casdoor_user)
 
 
+async def _attach_login_providers(
+    account: dict[str, object],
+    *,
+    auth: AuthContext,
+    session: AsyncSession,
+    settings: Settings,
+) -> dict[str, object]:
+    """附加 Casdoor 登录方式状态，并区分“未绑定”和“暂时读不到”。"""
+    account["loginProviders"] = []
+    account["loginProvidersStatus"] = "not_available"
+    if auth.method != "casdoor":
+        return account
+    try:
+        local_user = await UserRepository(session).get(auth.user_id)
+        if local_user is None or not local_user.casdoor_user_id:
+            account["loginProvidersStatus"] = "unavailable"
+            return account
+        casdoor_user = await CasdoorManagementClient(settings).get_user(local_user.casdoor_user_id)
+        account["loginProviders"] = _login_providers(casdoor_user)
+        account["loginProvidersStatus"] = "available"
+    except Exception:
+        # Casdoor 暂时不可用时保持账户主体可用，但显式标记绑定状态不可读。
+        account["loginProvidersStatus"] = "unavailable"
+    return account
+
+
 def _account_storage(settings: Settings = Depends(get_settings)) -> ObjectStorage | None:
     try:
         return get_object_storage(settings)
@@ -139,19 +165,7 @@ async def get_account(
         "deviceId": auth.device_id,
     }
     # 该用户绑定的第三方登录：get-account 不返回 properties，由服务端用应用凭据读取。
-    account["loginProviders"] = []
-    if auth.method == "casdoor":
-        try:
-            local_user = await UserRepository(session).get(auth.user_id)
-            if local_user is not None and local_user.casdoor_user_id:
-                casdoor_user = await CasdoorManagementClient(settings).get_user(
-                    local_user.casdoor_user_id
-                )
-                account["loginProviders"] = _login_providers(casdoor_user)
-        except Exception:
-            # Casdoor 暂时不可用时保持空列表，不影响账户主体信息。
-            account["loginProviders"] = []
-    return account
+    return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
 @router.patch("/profile")
@@ -159,6 +173,8 @@ async def update_profile(
     body: UpdateProfileRequest,
     auth: AuthContext = Depends(get_auth_context),
     service: AccountCenterService = Depends(_account_center_service),
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, object]:
     _require_idempotency(idempotency_key)
@@ -166,12 +182,13 @@ async def update_profile(
         raise ApplicationError(
             code="WEB_SESSION_REQUIRED", message="请使用 Web 登录修改账号资料。", status_code=403
         )
-    return await service.update_profile(
+    account = await service.update_profile(
         auth.user_id,
         locale=body.locale,
         timezone=body.timezone,
         expected_revision=body.expectedRevision,
     )
+    return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
 @router.post("/sync")
@@ -200,7 +217,7 @@ async def sync_account_profile(
     account = await AccountRepository(session).account(auth.user_id)
     if account is None:
         raise ApplicationError(code="USER_NOT_FOUND", message="用户不存在。", status_code=404)
-    return account
+    return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
 @router.post("/avatar")
@@ -209,6 +226,8 @@ async def upload_avatar(
     expectedRevision: int = Form(..., ge=1),
     auth: AuthContext = Depends(get_auth_context),
     service: AccountCenterService = Depends(_account_center_service),
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict[str, object]:
     _require_idempotency(idempotency_key)
@@ -216,7 +235,7 @@ async def upload_avatar(
         raise ApplicationError(
             code="WEB_SESSION_REQUIRED", message="请使用 Web 登录修改头像。", status_code=403
         )
-    return await service.upload_avatar(
+    account = await service.upload_avatar(
         auth.user_id,
         filename=file.filename or "avatar.jpg",
         content_type=file.content_type or "application/octet-stream",
@@ -224,6 +243,7 @@ async def upload_avatar(
         expected_revision=expectedRevision,
         access_token=auth.raw_access_token,
     )
+    return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
 @router.post("/password")

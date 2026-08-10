@@ -9,6 +9,7 @@ from app.infrastructure.identity.casdoor import (
     CasdoorTokenVerifier,
     _claim_bool,
     _claim_names,
+    _claim_optional_bool,
 )
 from app.modules.admin.auth import AdminContext, get_admin_context, permissions_for_principal
 from httpx import ASGITransport, AsyncClient
@@ -18,11 +19,26 @@ def test_casdoor_admin_claim_normalization() -> None:
     assert _claim_bool(True)
     assert _claim_bool("true")
     assert not _claim_bool("false")
+    assert _claim_optional_bool("false") is False
+    assert _claim_optional_bool("true") is True
+    assert _claim_optional_bool(None) is None
     assert _claim_names(["momentone-admin", {"name": "ops"}, {"id": "permission-id"}]) == (
         "momentone-admin",
         "ops",
         "permission-id",
     )
+
+
+def test_casdoor_userinfo_verification_state_overrides_stale_token_claim() -> None:
+    principal = AuthenticatedPrincipal(
+        issuer="https://example.com",
+        subject="user",
+        email_verified=True,
+        phone_verified=True,
+    ).merge_userinfo({"emailVerified": False, "phoneVerified": "false"})
+
+    assert principal.email_verified is False
+    assert principal.phone_verified is False
 
 
 def test_admin_role_and_operator_permissions() -> None:

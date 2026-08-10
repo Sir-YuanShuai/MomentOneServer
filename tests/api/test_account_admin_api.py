@@ -276,6 +276,8 @@ async def test_account_exposes_profile_storage_and_quota(app: FastAPI) -> None:
     assert body["storage"]["effectiveQuotaBytes"] == 1000
     assert body["quotaAccounts"][0]["remaining"] == 9958
     assert body["accessSource"]["method"] == "casdoor"
+    assert body["loginProviders"] == []
+    assert body["loginProvidersStatus"] == "unavailable"
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,31 @@ def _claim_bool(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
 
 
+def _claim_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes"}:
+            return True
+        if normalized in {"0", "false", "no"}:
+            return False
+    return None
+
+
+def _first_claim_bool(*values: object) -> bool | None:
+    for value in values:
+        parsed = _claim_optional_bool(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _prefer_userinfo_claim(current: bool | None, *values: object) -> bool | None:
+    parsed = _first_claim_bool(*values)
+    return current if parsed is None else parsed
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedPrincipal:
     issuer: str
@@ -38,8 +63,8 @@ class AuthenticatedPrincipal:
     audience: str | None = None
     email: str | None = None
     phone: str | None = None
-    email_verified: bool = False
-    phone_verified: bool = False
+    email_verified: bool | None = None
+    phone_verified: bool | None = None
     display_name: str | None = None
     avatar_url: str | None = None
     username: str | None = None
@@ -56,8 +81,16 @@ class AuthenticatedPrincipal:
             audience=self.audience,
             email=self.email or _string_claim(userinfo.get("email")),
             phone=self.phone or _string_claim(userinfo.get("phone")),
-            email_verified=self.email_verified or _claim_bool(userinfo.get("emailVerified")),
-            phone_verified=self.phone_verified or _claim_bool(userinfo.get("phoneVerified")),
+            email_verified=_prefer_userinfo_claim(
+                self.email_verified,
+                userinfo.get("emailVerified"),
+                userinfo.get("email_verified"),
+            ),
+            phone_verified=_prefer_userinfo_claim(
+                self.phone_verified,
+                userinfo.get("phoneVerified"),
+                userinfo.get("phone_verified"),
+            ),
             display_name=self.display_name
             or _string_claim(userinfo.get("name"))
             or _string_claim(userinfo.get("displayName")),
@@ -152,10 +185,12 @@ class CasdoorTokenVerifier:
                 audience=audience,
                 email=_string_claim(payload.get("email")),
                 phone=_string_claim(payload.get("phone")),
-                email_verified=_claim_bool(payload.get("email_verified"))
-                or _claim_bool(payload.get("emailVerified")),
-                phone_verified=_claim_bool(payload.get("phone_verified"))
-                or _claim_bool(payload.get("phoneVerified")),
+                email_verified=_first_claim_bool(
+                    payload.get("email_verified"), payload.get("emailVerified")
+                ),
+                phone_verified=_first_claim_bool(
+                    payload.get("phone_verified"), payload.get("phoneVerified")
+                ),
                 display_name=_string_claim(payload.get("name"))
                 or _string_claim(payload.get("preferred_username")),
                 avatar_url=_string_claim(payload.get("picture"))
@@ -218,5 +253,8 @@ __all__ = [
     "AuthenticatedPrincipal",
     "CasdoorTokenVerifier",
     "_claim_bool",
+    "_claim_optional_bool",
+    "_first_claim_bool",
+    "_prefer_userinfo_claim",
     "_claim_names",
 ]
