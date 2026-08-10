@@ -142,17 +142,22 @@ make db-reset
 
 ```text
 main  ← 受保护的生产分支，只接受 Pull Request 合并；合并后自动触发 CICD 部署生产
-dev   ← 开发集成分支，日常开发与 PR 的目标分支
+dev   ← 可选的开发集成分支，不直接部署生产
 ```
 
-工作流：
+生产发布工作流：
 
-1. 本地在 `dev` 分支开发（或从 `dev` 切出 `feat/*` 特性分支）；
-2. 开发完成后提 Pull Request 到 `dev`，CI 跑测试通过后合并；
-3. `dev` 稳定后提 Pull Request `dev → main`，CI 再次跑测试通过后合并；
-4. 合并到 `main` 后自动触发：构建镜像 → 推送 GHCR → SSH 部署生产 → 健康检查。
+1. 从最新 `main` 切出 `feat/*` 或 `fix/*` 分支并完成本地检查；
+2. 推送功能分支，向 `main` 创建 Pull Request；
+3. 等待 `Quality and PostgreSQL integration` 与
+   `Build and smoke-test container` 两项必需检查通过；
+4. 合并 Pull Request；
+5. `main` 的 push 工作流自动构建镜像、推送 GHCR、执行数据库迁移、SSH
+   部署并完成健康检查。
 
-`main` 分支建议开启分支保护：要求 PR、要求 CI 通过、禁止直接 push、禁止 force push。
+`main` 已开启分支保护：要求 PR 和必需 CI 检查通过，禁止直接 push 与 force
+push。`dev` 适合需要多项功能联合验证时作为集成分支，但发布最终仍必须通过
+Pull Request 合并到 `main`。
 
 ## CI/CD
 
@@ -246,6 +251,10 @@ CI 自动部署失败或需要重新部署当前镜像时，从本地执行：
 ```
 
 需要本地有 `~/.moment-one-deploy.env` 或导出 `SERVER_HOST` / `SERVER_USER` / `SERVER_PORT` / `SERVER_DEPLOY_PATH` 环境变量，SSH 走本地 `~/.ssh` 配置。
+
+该脚本只会拉取 GHCR 中现有的 `latest` 镜像并重新执行迁移和启动，不会构建或
+发布本地、未合并到 `main` 的代码。正常发布始终使用 Pull Request 和 GitHub
+Actions。
 
 ## Secret 规则
 
