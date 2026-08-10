@@ -127,11 +127,17 @@ async def resolve_user_id(
     session: AsyncSession, verifier: CasdoorTokenVerifier, access_token: str
 ) -> UUID:
     principal = verifier.verify(access_token)
+    userinfo: dict[str, object] | None = None
+    if verifier.required_organization:
+        userinfo = await verifier.fetch_account(access_token)
+        principal = principal.merge_userinfo(userinfo)
+        verifier.ensure_organization(principal)
     user_repo = UserRepository(session)
     issuer = principal.issuer.rstrip("/")
     user = await user_repo.get_by_identity(issuer, principal.subject)
     if user is None:
-        userinfo = await verifier.fetch_userinfo(access_token)
+        if userinfo is None:
+            userinfo = await verifier.fetch_userinfo(access_token)
         merged = principal.merge_userinfo(userinfo)
         casdoor_user_id = userinfo.get("id") or userinfo.get("sub") or principal.subject
         user = await user_repo.upsert_from_casdoor(merged, str(casdoor_user_id))

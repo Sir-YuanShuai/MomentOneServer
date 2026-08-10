@@ -92,6 +92,22 @@ class CasdoorTokenVerifier:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
+    @property
+    def required_organization(self) -> str | None:
+        organization = (self._settings.casdoor_organization or "").strip()
+        return organization or None
+
+    def ensure_organization(self, principal: AuthenticatedPrincipal) -> None:
+        organization = self.required_organization
+        if not organization or principal.owner == organization:
+            return
+        raise ApplicationError(
+            code="IDENTITY_ORGANIZATION_MISMATCH",
+            message="请使用 Moment One 所属组织账号重新登录。",
+            status_code=401,
+            details={"expectedOrganization": organization},
+        )
+
     def _ensure_jwks_client(self) -> PyJWKClient:
         now = time.monotonic()
         if self._jwks_client is None or now - self._jwks_fetched_at > self._jwks_ttl:
@@ -181,6 +197,20 @@ class CasdoorTokenVerifier:
             )
             resp.raise_for_status()
             data = resp.json()
+            return data if isinstance(data, dict) else {}
+
+    async def fetch_account(self, access_token: str) -> dict[str, object]:
+        account_url = f"{str(self._settings.casdoor_issuer).rstrip('/')}/api/get-account"
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                account_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if not isinstance(payload, dict) or payload.get("status") != "ok":
+                return {}
+            data = payload.get("data")
             return data if isinstance(data, dict) else {}
 
 

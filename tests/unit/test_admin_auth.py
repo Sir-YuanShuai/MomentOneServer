@@ -3,7 +3,13 @@ from uuid import UUID
 import pytest
 from app.application import create_application
 from app.core.config import Settings
-from app.infrastructure.identity.casdoor import AuthenticatedPrincipal, _claim_bool, _claim_names
+from app.core.errors import ApplicationError
+from app.infrastructure.identity.casdoor import (
+    AuthenticatedPrincipal,
+    CasdoorTokenVerifier,
+    _claim_bool,
+    _claim_names,
+)
 from app.modules.admin.auth import AdminContext, get_admin_context, permissions_for_principal
 from httpx import ASGITransport, AsyncClient
 
@@ -41,6 +47,32 @@ def test_admin_role_and_operator_permissions() -> None:
     assert permissions == {"admin.read", "admin.security", "admin.operations"}
     assert is_super is False
     assert source == "casdoor.permission"
+
+
+def test_casdoor_organization_guard_rejects_other_owner() -> None:
+    verifier = CasdoorTokenVerifier(Settings(env="test", casdoor_organization="yuanshuai.fun"))
+
+    with pytest.raises(ApplicationError) as exc_info:
+        verifier.ensure_organization(
+            AuthenticatedPrincipal(
+                issuer="https://example.com",
+                subject="user",
+                owner="built-in",
+            )
+        )
+
+    assert exc_info.value.code == "IDENTITY_ORGANIZATION_MISMATCH"
+    assert exc_info.value.status_code == 401
+
+
+def test_casdoor_organization_guard_accepts_account_owner() -> None:
+    verifier = CasdoorTokenVerifier(Settings(env="test", casdoor_organization="yuanshuai.fun"))
+    principal = AuthenticatedPrincipal(
+        issuer="https://example.com",
+        subject="user",
+    ).merge_userinfo({"owner": "yuanshuai.fun"})
+
+    verifier.ensure_organization(principal)
 
 
 @pytest.mark.asyncio
