@@ -225,6 +225,7 @@ async def test_casdoor_upload_avatar_persists_avatar_with_user_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
+    upload_params: dict[str, str] = {}
 
     async def fake_json_request(
         self: CasdoorManagementClient,
@@ -253,6 +254,20 @@ async def test_casdoor_upload_avatar_persists_avatar_with_user_token(
                 "id": "casdoor-user-id",
                 "avatar": "",
             }
+        if path == "/api/get-application":
+            return {
+                "name": "MomentOne",
+                "organization": "yuanshuai.fun",
+                "providers": [
+                    {
+                        "name": "minio-casdoor",
+                        "provider": {
+                            "name": "minio-casdoor",
+                            "category": "Storage",
+                        },
+                    }
+                ],
+            }
         return {}
 
     class FakeResponse:
@@ -272,7 +287,10 @@ async def test_casdoor_upload_avatar_persists_avatar_with_user_token(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def post(self, *_args: object, **_kwargs: object) -> FakeResponse:
+        async def post(self, *_args: object, **kwargs: object) -> FakeResponse:
+            params = kwargs.get("params")
+            if isinstance(params, dict):
+                upload_params.update({str(key): str(value) for key, value in params.items()})
             return FakeResponse()
 
     monkeypatch.setattr(CasdoorManagementClient, "_json_request", fake_json_request)
@@ -293,10 +311,16 @@ async def test_casdoor_upload_avatar_persists_avatar_with_user_token(
     assert avatar == "https://cdn.example/avatar.png"
     assert calls[0]["path"] == "/api/get-user"
     assert calls[0]["access_token"] == "user-token"
+    assert calls[1]["path"] == "/api/get-application"
+    assert calls[1]["access_token"] is None
+    assert upload_params["owner"] == "yuanshuai.fun"
+    assert upload_params["application"] == "MomentOne"
+    assert upload_params["provider"] == "minio-casdoor"
     update_call = calls[-1]
     assert update_call["path"] == "/api/update-user"
     assert update_call["access_token"] == "user-token"
     assert update_call["json"]["avatar"] == "https://cdn.example/avatar.png"
+    assert update_call["json"]["owner"] == "yuanshuai.fun"
 
 
 class _FakeExecResult:
