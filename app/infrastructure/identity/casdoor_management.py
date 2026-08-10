@@ -440,18 +440,24 @@ class CasdoorManagementClient:
                 message="头像上传失败，请稍后重试。",
                 status_code=502,
             ) from exc
+
+        async def persist_avatar(user_data: dict[str, object], avatar_url: str) -> str:
+            user_data["avatar"] = avatar_url
+            await self.update_user(user_data, access_token=access_token)
+            return avatar_url
+
         if isinstance(data, str):
-            return data
+            return await persist_avatar(user, data)
         if isinstance(data, list) and data and isinstance(data[0], str):
-            return data[0]
+            return await persist_avatar(user, data[0])
         if isinstance(data, dict):
             for key in ("url", "fileUrl", "Url"):
                 if isinstance(data.get(key), str):
-                    return str(data[key])
-        refreshed = await self.get_user(casdoor_user_id)
+                    return await persist_avatar(user, str(data[key]))
+        refreshed = await self.get_user(casdoor_user_id, access_token=access_token)
         avatar = refreshed.get("avatar")
         if isinstance(avatar, str) and avatar:
-            return avatar
+            return await persist_avatar(refreshed, avatar)
         raise ApplicationError(
             code="AVATAR_UPLOAD_FAILED", message="Casdoor 未返回头像地址。", status_code=502
         )
