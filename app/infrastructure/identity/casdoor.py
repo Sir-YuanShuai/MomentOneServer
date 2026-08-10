@@ -37,8 +37,13 @@ class AuthenticatedPrincipal:
     subject: str
     audience: str | None = None
     email: str | None = None
+    phone: str | None = None
+    email_verified: bool = False
+    phone_verified: bool = False
     display_name: str | None = None
     avatar_url: str | None = None
+    username: str | None = None
+    owner: str | None = None
     issued_at: int | None = None
     is_admin: bool = False
     roles: tuple[str, ...] = ()
@@ -50,6 +55,9 @@ class AuthenticatedPrincipal:
             subject=self.subject,
             audience=self.audience,
             email=self.email or _string_claim(userinfo.get("email")),
+            phone=self.phone or _string_claim(userinfo.get("phone")),
+            email_verified=self.email_verified or _claim_bool(userinfo.get("emailVerified")),
+            phone_verified=self.phone_verified or _claim_bool(userinfo.get("phoneVerified")),
             display_name=self.display_name
             or _string_claim(userinfo.get("name"))
             or _string_claim(userinfo.get("displayName")),
@@ -57,6 +65,8 @@ class AuthenticatedPrincipal:
             or _string_claim(userinfo.get("picture"))
             or _string_claim(userinfo.get("avatar"))
             or _string_claim(userinfo.get("avatarUrl")),
+            username=self.username or _string_claim(userinfo.get("name")),
+            owner=self.owner or _string_claim(userinfo.get("owner")),
             issued_at=self.issued_at,
             is_admin=self.is_admin
             or _claim_bool(userinfo.get("isAdmin"))
@@ -125,6 +135,11 @@ class CasdoorTokenVerifier:
                 subject=str(sub),
                 audience=audience,
                 email=_string_claim(payload.get("email")),
+                phone=_string_claim(payload.get("phone")),
+                email_verified=_claim_bool(payload.get("email_verified"))
+                or _claim_bool(payload.get("emailVerified")),
+                phone_verified=_claim_bool(payload.get("phone_verified"))
+                or _claim_bool(payload.get("phoneVerified")),
                 display_name=_string_claim(payload.get("name"))
                 or _string_claim(payload.get("preferred_username")),
                 avatar_url=_string_claim(payload.get("picture"))

@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     casdoor_operator_roles: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["momentone-operator"]
     )
+    # Casdoor Management API：账号资料、头像、密码和联系方式同步。
+    # 未单独配置时复用 MCP confidential client。
+    casdoor_management_client_id: str | None = None
+    casdoor_management_client_secret: str | None = None
+    casdoor_organization: str | None = None
+    casdoor_application: str | None = None
+    account_link_redirect_uri: str | None = None
+    web_base_url: str = "http://localhost:3000"
 
     # 眼镜端 JWT 自签发（QR Binding 授权）
     jwt_private_key_path: str | None = None

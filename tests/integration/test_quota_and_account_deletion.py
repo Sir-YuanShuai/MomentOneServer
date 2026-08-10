@@ -164,3 +164,134 @@ async def test_plan_change_is_immediately_visible_in_account_snapshot() -> None:
             await session.rollback()
     finally:
         await database.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_identity_mapping_and_unlink_preview_confirm() -> None:
+    settings = Settings()
+    if not settings.database_url:
+        pytest.skip("MOMENT_ONE_DATABASE_URL is not configured")
+
+    from app.infrastructure.database.repositories.user_repository import UserRepository
+    from app.infrastructure.identity.casdoor import AuthenticatedPrincipal
+    from app.modules.accounts.repository import IdentityRepository
+    from app.modules.accounts.service import AccountCenterService
+
+    database = Database(settings)
+    try:
+        async with database.session_factory() as session:
+            primary = AuthenticatedPrincipal(
+                issuer="https://identity.example.com",
+                subject=f"primary-{uuid4()}",
+                email="primary@example.com",
+                display_name="Identity Test",
+                email_verified=True,
+            )
+            user = await UserRepository(session).upsert_from_casdoor(primary, str(uuid4()))
+            identities = IdentityRepository(session)
+            primary_identity = await identities.get_by_external(primary.issuer, primary.subject)
+            assert primary_identity is not None
+            assert primary_identity.user_id == user.id
+            assert primary_identity.is_primary is True
+
+            secondary = await identities.ensure_oidc(
+                user_id=user.id,
+                issuer="https://identity.example.com",
+                subject=f"secondary-{uuid4()}",
+                identifier="secondary@example.com",
+                display_name="Secondary Login",
+                provider="github",
+            )
+            assert (
+                await UserRepository(session).get_by_identity(secondary.issuer, secondary.subject)
+                == user
+            )
+
+            service = AccountCenterService(session, settings)
+            preview = await service.unlink_preview(user.id, secondary.id)
+            result = await service.unlink_confirm(
+                user.id,
+                confirmation_id=UUID(str(preview["confirmationId"])),
+                phrase="解除绑定",
+                issued_at=int(datetime.now(UTC).timestamp()),
+            )
+            assert result["unlinked"] is True
+            assert (await identities.get(secondary.id)).status == "unlinked"  # type: ignore[union-attr]
+            assert (await identities.get(primary_identity.id)).is_primary is True  # type: ignore[union-attr]
+            await session.rollback()
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_contact_verification_updates_profile_and_identity() -> None:
+    settings = Settings()
+    if not settings.database_url:
+        pytest.skip("MOMENT_ONE_DATABASE_URL is not configured")
+
+    from app.modules.accounts.repository import IdentityRepository
+    from app.modules.accounts.service import AccountCenterService
+
+    class FakeCasdoorManagement:
+        configured = True
+
+        async def get_user(self, casdoor_user_id: str, **_kwargs: object) -> dict[str, object]:
+            return {
+                "id": casdoor_user_id,
+                "owner": "test-org",
+                "name": "contact-user",
+                "signupApplication": "moment-one",
+            }
+
+        async def find_user(self, **_kwargs: object) -> None:
+            return None
+
+        async def update_profile(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def send_contact_code(self, **_kwargs: object) -> None:
+            return None
+
+        async def verify_contact_code(self, **_kwargs: object) -> None:
+            return None
+
+    database = Database(settings)
+    try:
+        async with database.session_factory() as session:
+            user_id = uuid4()
+            user = User(
+                id=user_id,
+                casdoor_sub=f"contact-{user_id}",
+                casdoor_user_id=str(user_id),
+                display_name="Contact Test",
+                status="active",
+                revision=1,
+            )
+            session.add(user)
+            await session.flush()
+            await EntitlementRepository(session).ensure_user_defaults(user_id)
+
+            service = AccountCenterService(session, settings)
+            service._casdoor = FakeCasdoorManagement()  # type: ignore[assignment]  # pyright: ignore[reportPrivateUsage]
+            challenge = await service.start_contact_challenge(
+                user_id,
+                kind="email",
+                destination="NEW@Example.com",
+                country_code=None,
+                expected_revision=1,
+            )
+            snapshot = await service.confirm_contact_challenge(
+                user_id,
+                challenge_id=UUID(str(challenge["challengeId"])),
+                code="123456",
+            )
+            assert snapshot["profile"]["email"] == "new@example.com"  # type: ignore[index]
+            assert snapshot["profile"]["emailVerified"] is True  # type: ignore[index]
+            identity = await IdentityRepository(session).get_by_external("email", "new@example.com")
+            assert identity is not None
+            assert identity.user_id == user_id
+            await session.rollback()
+    finally:
+        await database.dispose()

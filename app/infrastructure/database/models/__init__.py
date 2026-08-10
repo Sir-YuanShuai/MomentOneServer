@@ -14,7 +14,11 @@ from app.infrastructure.database.models.entitlement import (
 )
 from app.infrastructure.database.models.habit_goal import HabitGoal
 from app.infrastructure.database.models.idempotency import IdempotencyKey
-from app.infrastructure.database.models.identity import UserIdentity
+from app.infrastructure.database.models.identity import (
+    AccountLinkSession,
+    ContactVerificationChallenge,
+    UserIdentity,
+)
 from app.infrastructure.database.models.mcp_oauth import (
     McpAuthorization,
     McpOAuthClient,
@@ -25,11 +29,13 @@ from app.infrastructure.database.models.moment_revision import MomentRevision
 from app.infrastructure.database.models.quota import ApiUsageBucket, QuotaAccount, QuotaUsageEvent
 
 __all__ = [
+    "AccountLinkSession",
     "ApiUsageBucket",
     "Asset",
     "AuditEvent",
     "BindingCode",
     "Device",
+    "ContactVerificationChallenge",
     "DeviceBinding",
     "HabitGoal",
     "PlanDefinition",

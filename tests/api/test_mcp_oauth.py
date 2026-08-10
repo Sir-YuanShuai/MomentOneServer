@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ import pytest
 from app.api.routes import mcp_oauth as mcp_oauth_routes
 from app.application import create_application
 from app.core.config import Settings
+from app.infrastructure.identity.casdoor_management import CasdoorManagementClient
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.mcp_oauth import service as oauth_service
 from app.modules.mcp_oauth.service import (
@@ -76,6 +78,70 @@ def _make_settings(tmp_path: Path) -> Settings:
         casdoor_mcp_redirect_uri=None,  # 显式覆盖 .env，避免回退到真实环境变量
         mcp_apps_html_path=str(apps_html),
     )
+
+
+def test_casdoor_account_link_authorize_url_forces_login_without_provider_param(
+    tmp_path: Path,
+) -> None:
+    settings = _make_settings(tmp_path)
+    client = CasdoorManagementClient(settings)
+
+    url = client.authorize_url(
+        state="link-state",
+        code_verifier="link-verifier",
+        redirect_uri="http://localhost:8000/oauth/callback",
+    )
+    params = parse_qs(urlparse(url).query)
+
+    assert urlparse(url).netloc == "account.example.fun"
+    assert params["prompt"] == ["login"]
+    assert params["max_age"] == ["0"]
+    assert params["redirect_uri"] == ["http://localhost:8000/oauth/callback"]
+    assert params["code_challenge_method"] == ["S256"]
+    assert "provider" not in params
+
+
+@pytest.mark.asyncio
+async def test_casdoor_provider_link_url_uses_link_method(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _make_settings(tmp_path)
+
+    async def fake_get_application(self: CasdoorManagementClient) -> dict[str, object]:
+        del self
+        return {
+            "name": "MomentOne",
+            "providers": [
+                {
+                    "provider": {
+                        "type": "GitHub",
+                        "name": "oAuth-github",
+                        "clientId": "github-client",
+                        "scopes": "",
+                    }
+                }
+            ],
+        }
+
+    monkeypatch.setattr(CasdoorManagementClient, "get_application", fake_get_application)
+    client = CasdoorManagementClient(settings)
+
+    url = await client.provider_link_url(
+        provider="github",
+        return_uri="http://localhost:8000/oauth/link-return?state=link-state",
+    )
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    inner = parse_qs(base64.b64decode(params["state"][0]).decode().lstrip("&"))
+
+    assert parsed.netloc == "github.com"
+    assert params["client_id"] == ["github-client"]
+    assert params["redirect_uri"] == ["https://account.example.fun/callback"]
+    assert inner["application"] == ["MomentOne"]
+    assert inner["provider"] == ["oAuth-github"]
+    assert inner["method"] == ["link"]
+    assert inner["from"] == ["http://localhost:8000/oauth/link-return?state=link-state"]
 
 
 class _FakeExecResult:
@@ -276,6 +342,15 @@ def app(tmp_path: Path, fakes: dict[str, Any]) -> Iterator[FastAPI]:
     application.dependency_overrides[get_settings] = lambda: settings
     application.dependency_overrides[mcp_oauth_routes.get_db_session] = _fake_session
     application.dependency_overrides[mcp_oauth_routes.get_quota_repository] = lambda: None
+
+    class FakeAccountCenter:
+        async def has_link_state(self, state: str) -> bool:
+            del state
+            return False
+
+    application.dependency_overrides[mcp_oauth_routes._make_account_center_service] = (  # pyright: ignore[reportPrivateUsage]
+        FakeAccountCenter
+    )
 
     yield application
 

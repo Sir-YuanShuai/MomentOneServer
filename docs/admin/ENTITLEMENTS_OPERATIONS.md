@@ -66,3 +66,13 @@ POST /v1/account/delete-confirm
 ```
 
 Confirm 要求输入“永久注销”、`Idempotency-Key` 和最近 5 分钟内重新验证的 Casdoor Token。
+
+## 账号中心联动
+
+管理员调整套餐后，用户账号页会在下一次 `/v1/account` 请求中重新同步：
+
+- 套餐名称、key、版本与权益来源；
+- 存储有效额度；
+- API、MCP、Planner、设备、客户端和 AI Token 限额。
+
+账号响应使用 `Cache-Control: private, no-store`，Web 设置页在重新挂载和窗口重新获得焦点时强制获取最新快照。
