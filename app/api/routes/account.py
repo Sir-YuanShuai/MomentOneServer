@@ -93,6 +93,22 @@ def _login_providers(casdoor_user: dict[str, object]) -> list[dict[str, str]]:
     return login_providers_from_casdoor(casdoor_user)
 
 
+async def _read_casdoor_user(
+    casdoor_user_id: str,
+    *,
+    auth: AuthContext,
+    client: CasdoorManagementClient,
+) -> dict[str, object]:
+    # 账号只读优先使用当前用户的 Casdoor token，避免生产环境必须额外配置
+    # 管理凭据；应用凭据作为只读兜底，兼容 token 权限不足的租户配置。
+    if auth.raw_access_token:
+        try:
+            return await client.get_user(casdoor_user_id, access_token=auth.raw_access_token)
+        except ApplicationError:
+            pass
+    return await client.get_user(casdoor_user_id)
+
+
 async def _attach_login_providers(
     account: dict[str, object],
     *,
@@ -110,7 +126,11 @@ async def _attach_login_providers(
         if local_user is None or not local_user.casdoor_user_id:
             account["loginProvidersStatus"] = "unavailable"
             return account
-        casdoor_user = await CasdoorManagementClient(settings).get_user(local_user.casdoor_user_id)
+        casdoor_user = await _read_casdoor_user(
+            local_user.casdoor_user_id,
+            auth=auth,
+            client=CasdoorManagementClient(settings),
+        )
         account["loginProviders"] = _login_providers(casdoor_user)
         account["loginProvidersStatus"] = "available"
     except Exception:

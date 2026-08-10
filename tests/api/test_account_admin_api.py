@@ -7,6 +7,7 @@ from app.api.deps import AuthContext
 from app.api.routes import account as account_routes
 from app.api.routes import admin as admin_routes
 from app.application import create_application
+from app.core.errors import ApplicationError
 from app.modules.admin.auth import AdminContext
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -50,6 +51,56 @@ def test_login_provider_direct_fields_do_not_count_as_bound() -> None:
     )
 
     assert providers == []
+
+
+@pytest.mark.asyncio
+async def test_account_login_provider_read_prefers_user_token() -> None:
+    calls: list[str | None] = []
+
+    class FakeCasdoorClient:
+        async def get_user(
+            self, user_id: str, *, access_token: str | None = None
+        ) -> dict[str, object]:
+            assert user_id == "casdoor-user-id"
+            calls.append(access_token)
+            return {"properties": {"oauth_QQ_id": "qq-id"}}
+
+    result = await account_routes._read_casdoor_user(  # pyright: ignore[reportPrivateUsage]
+        "casdoor-user-id",
+        auth=AuthContext(USER_ID, method="casdoor", raw_access_token="user-token"),
+        client=FakeCasdoorClient(),  # type: ignore[arg-type]
+    )
+
+    assert result["properties"] == {"oauth_QQ_id": "qq-id"}
+    assert calls == ["user-token"]
+
+
+@pytest.mark.asyncio
+async def test_account_login_provider_read_falls_back_to_app_credentials() -> None:
+    calls: list[str | None] = []
+
+    class FakeCasdoorClient:
+        async def get_user(
+            self, user_id: str, *, access_token: str | None = None
+        ) -> dict[str, object]:
+            assert user_id == "casdoor-user-id"
+            calls.append(access_token)
+            if access_token:
+                raise ApplicationError(
+                    code="IDENTITY_UPSTREAM_ERROR",
+                    message="token read failed",
+                    status_code=502,
+                )
+            return {"properties": {"oauth_GitHub_id": "github-id"}}
+
+    result = await account_routes._read_casdoor_user(  # pyright: ignore[reportPrivateUsage]
+        "casdoor-user-id",
+        auth=AuthContext(USER_ID, method="casdoor", raw_access_token="user-token"),
+        client=FakeCasdoorClient(),  # type: ignore[arg-type]
+    )
+
+    assert result["properties"] == {"oauth_GitHub_id": "github-id"}
+    assert calls == ["user-token", None]
 
 
 class FakeAccountRepository:

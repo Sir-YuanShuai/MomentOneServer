@@ -207,6 +207,9 @@ CI 当前不调用远程 Casdoor 或 MinIO/S3，也不需要相关真实 Secret�
    MOMENT_ONE_CASDOOR_ISSUER=https://auth.your-domain.com
    MOMENT_ONE_CASDOOR_AUDIENCE=moment-one-api
    MOMENT_ONE_CASDOOR_JWKS_URL=https://auth.your-domain.com/.well-known/jwks.json
+   # 可选：账号中心读取第三方登录绑定的只读管理凭据；未配置时使用用户 Token
+   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID=
+   MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET=
 
    # MinIO / S3
    MOMENT_ONE_S3_ENDPOINT_URL=https://storage.your-domain.com
