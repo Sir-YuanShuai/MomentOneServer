@@ -24,9 +24,7 @@ def has_casdoor_provider_link(casdoor_user: dict[str, object], provider: str) ->
     raw_props = casdoor_user.get("properties")
     props = raw_props if isinstance(raw_props, dict) else {}
     return bool(
-        casdoor_user.get(field)
-        or props.get(f"oauth_{provider_name}_id")
-        or props.get(f"oauth_{provider_name}_accessToken")
+        props.get(f"oauth_{provider_name}_id") or props.get(f"oauth_{provider_name}_accessToken")
     )
 
 
@@ -38,10 +36,16 @@ def login_providers_from_casdoor(casdoor_user: dict[str, object]) -> list[dict[s
         if has_casdoor_provider_link(casdoor_user, field):
             provider_name = LOGIN_PROVIDER_PROPERTY_NAMES[field]
             display = props.get(f"oauth_{provider_name}_displayName")
+            handle = (
+                display
+                or props.get(f"oauth_{provider_name}_username")
+                or props.get(f"oauth_{provider_name}_email")
+                or props.get(f"oauth_{provider_name}_id")
+            )
             providers.append(
                 {
                     "provider": field,
-                    "handle": str(display) if display else str(casdoor_user.get(field) or ""),
+                    "handle": str(handle or ""),
                 }
             )
     return providers

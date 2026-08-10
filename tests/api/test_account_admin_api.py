@@ -23,6 +23,7 @@ def test_login_providers_are_derived_from_casdoor_properties() -> None:
                 "oauth_GitHub_displayName": "octocat",
                 "oauth_Gitee_id": "gitee-id",
                 "oauth_Google_accessToken": "present",
+                "oauth_Google_email": "user@gmail.com",
                 "oauth_QQ_displayName": "qq-user",
                 "oauth_QQ_id": "qq-id",
             },
@@ -31,10 +32,24 @@ def test_login_providers_are_derived_from_casdoor_properties() -> None:
 
     assert providers == [
         {"provider": "github", "handle": "octocat"},
-        {"provider": "gitee", "handle": ""},
-        {"provider": "google", "handle": ""},
+        {"provider": "gitee", "handle": "gitee-id"},
+        {"provider": "google", "handle": "user@gmail.com"},
         {"provider": "qq", "handle": "qq-user"},
     ]
+
+
+def test_login_provider_direct_fields_do_not_count_as_bound() -> None:
+    providers = account_routes._login_providers(  # pyright: ignore[reportPrivateUsage]
+        {
+            "github": "stale-github-id",
+            "gitee": "stale-gitee-id",
+            "google": "stale-google-id",
+            "qq": "stale-qq-id",
+            "properties": {},
+        }
+    )
+
+    assert providers == []
 
 
 class FakeAccountRepository:
@@ -120,6 +135,11 @@ class FakeAccountCenterService:
             "authorizeUrl": "https://account.example.com/authorize",
             "expiresAt": "2026-08-09T12:00:00+00:00",
         }
+
+    async def unlink_login_provider(self, user_id: UUID, **kwargs: object) -> None:
+        assert user_id == USER_ID
+        assert kwargs["provider"] == "github"
+        assert kwargs["access_token"] is None
 
     async def unlink_preview(self, user_id: UUID, identity_id: UUID) -> dict[str, object]:
         assert user_id == USER_ID
@@ -358,6 +378,10 @@ async def test_account_center_profile_identity_and_link_routes(app: FastAPI) -> 
             headers={"Idempotency-Key": "link-idem"},
             json={"provider": "github", "returnUri": "https://moment.example/settings"},
         )
+        provider_unlink = await client.delete(
+            "/v1/account/login-providers/github",
+            headers={"Idempotency-Key": "provider-unlink-idem"},
+        )
         unlink = await client.post(
             "/v1/account/identities/44444444-4444-4444-8444-444444444444/unlink-preview"
         )
@@ -370,6 +394,7 @@ async def test_account_center_profile_identity_and_link_routes(app: FastAPI) -> 
     assert identities.json()["items"][0]["provider"] == "casdoor"
     assert challenge.status_code == 201
     assert link.status_code == 201
+    assert provider_unlink.status_code == 204
     assert unlink.json()["confirmationPhrase"] == "解除绑定"
     assert merge.json()["status"] == "merge_required"
 
@@ -382,6 +407,7 @@ def test_account_and_admin_usage_routes_registered(app: FastAPI) -> None:
         "/v1/account/avatar",
         "/v1/account/password",
         "/v1/account/identities",
+        "/v1/account/login-providers/{provider}",
         "/v1/account/contact-challenges",
         "/v1/account/link-sessions",
         "/v1/account/merge-preview",

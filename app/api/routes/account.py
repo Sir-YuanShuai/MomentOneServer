@@ -276,6 +276,26 @@ async def revoke_session(
     return Response(status_code=204)
 
 
+@router.delete("/login-providers/{provider}", status_code=204)
+async def unlink_login_provider(
+    provider: str,
+    auth: AuthContext = Depends(get_auth_context),
+    service: AccountCenterService = Depends(_account_center_service),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Response:
+    _require_idempotency(idempotency_key)
+    if auth.method != "casdoor":
+        raise ApplicationError(
+            code="WEB_SESSION_REQUIRED", message="请使用 Web 登录解除登录方式。", status_code=403
+        )
+    await service.unlink_login_provider(
+        auth.user_id,
+        provider=provider,
+        access_token=auth.raw_access_token,
+    )
+    return Response(status_code=204)
+
+
 @router.post("/contact-challenges", status_code=201)
 async def start_contact_challenge(
     body: ContactChallengeRequest,

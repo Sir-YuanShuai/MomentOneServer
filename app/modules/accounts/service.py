@@ -268,6 +268,33 @@ class AccountCenterService:
             metadata={"application": application},
         )
 
+    async def unlink_login_provider(
+        self,
+        user_id: UUID,
+        *,
+        provider: str,
+        access_token: str | None = None,
+    ) -> None:
+        normalized_provider = normalize_login_provider(provider)
+        if normalized_provider is None:
+            raise ApplicationError(
+                code="IDENTITY_LINK_PROVIDER_UNSUPPORTED",
+                message="暂不支持该登录方式。",
+                status_code=400,
+            )
+        user = await self._user(user_id)
+        await self._casdoor.unlink_provider(
+            user.casdoor_user_id,
+            provider=normalized_provider,
+            access_token=access_token,
+        )
+        await self._audit(
+            user_id,
+            event_type="account.login_provider.unlinked",
+            resource_type="identity_provider",
+            metadata={"provider": normalized_provider},
+        )
+
     async def start_contact_challenge(
         self,
         user_id: UUID,

@@ -317,6 +317,32 @@ class CasdoorManagementClient:
         )
         return user
 
+    async def unlink_provider(
+        self,
+        casdoor_user_id: str,
+        *,
+        provider: str,
+        access_token: str | None = None,
+    ) -> None:
+        self._require_user_token(access_token)
+        provider_type = PROVIDER_TYPES.get(provider)
+        if provider_type is None:
+            raise ApplicationError(
+                code="IDENTITY_LINK_PROVIDER_UNSUPPORTED",
+                message="暂不支持该登录方式。",
+                status_code=400,
+            )
+        user = await self.get_user(casdoor_user_id)
+        raw_props = user.get("properties")
+        props = raw_props if isinstance(raw_props, dict) else {}
+        user["properties"] = {
+            key: value
+            for key, value in props.items()
+            if not key.startswith(f"oauth_{provider_type}_")
+        }
+        user[provider] = ""
+        await self.update_user(user, access_token=access_token)
+
     async def update_profile(
         self,
         casdoor_user_id: str,

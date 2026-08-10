@@ -144,6 +144,71 @@ async def test_casdoor_provider_link_url_uses_link_method(
     assert inner["from"] == ["http://localhost:8000/oauth/link-return?state=link-state"]
 
 
+@pytest.mark.asyncio
+async def test_casdoor_unlink_provider_clears_oauth_properties_with_user_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_json_request(
+        self: CasdoorManagementClient,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, str | int | bool] | None = None,
+        data: dict[str, str | int | bool] | None = None,
+        json: dict[str, object] | None = None,
+        access_token: str | None = None,
+    ) -> object:
+        del self
+        calls.append(
+            {
+                "method": method,
+                "path": path,
+                "params": params,
+                "data": data,
+                "json": json,
+                "access_token": access_token,
+            }
+        )
+        if path == "/api/get-user":
+            return {
+                "owner": "yuanshuai.fun",
+                "name": "moment-user",
+                "id": "casdoor-user-id",
+                "github": "stale-field",
+                "properties": {
+                    "oauth_GitHub_id": "github-id",
+                    "oauth_GitHub_displayName": "octocat",
+                    "oauth_GitHub_accessToken": "secret-token",
+                    "oauth_Gitee_id": "gitee-id",
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(CasdoorManagementClient, "_json_request", fake_json_request)
+    client = CasdoorManagementClient(_make_settings(tmp_path))
+
+    await client.unlink_provider(
+        "casdoor-user-id",
+        provider="github",
+        access_token="user-token",
+    )
+
+    update_call = calls[-1]
+    assert update_call["path"] == "/api/update-user"
+    assert update_call["access_token"] == "user-token"
+    payload = update_call["json"]
+    assert isinstance(payload, dict)
+    assert payload["github"] == ""
+    props = payload["properties"]
+    assert isinstance(props, dict)
+    assert "oauth_GitHub_id" not in props
+    assert "oauth_GitHub_accessToken" not in props
+    assert props["oauth_Gitee_id"] == "gitee-id"
+
+
 class _FakeExecResult:
     def scalar_one_or_none(self) -> None:
         return None
