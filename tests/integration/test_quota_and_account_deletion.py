@@ -236,6 +236,7 @@ async def test_contact_verification_updates_profile_and_identity() -> None:
 
     class FakeCasdoorManagement:
         configured = True
+        application_id = "admin/MomentOne"
 
         async def get_user(self, casdoor_user_id: str, **_kwargs: object) -> dict[str, object]:
             return {
