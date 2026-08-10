@@ -133,7 +133,15 @@ class CasdoorManagementClient:
         json: dict[str, object] | None = None,
         access_token: str | None = None,
     ) -> Any:
-        self._require()
+        if access_token:
+            if not self._issuer:
+                raise ApplicationError(
+                    code="IDENTITY_SYNC_NOT_CONFIGURED",
+                    message="Casdoor 服务尚未配置。",
+                    status_code=503,
+                )
+        else:
+            self._require()
         query: dict[str, str | int | bool] = {**(params or {})}
         headers: dict[str, str] = {}
         if access_token:
