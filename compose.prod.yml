@@ -4,8 +4,9 @@
 #   - Pulls a prebuilt image from GHCR instead of building from source.
 #   - Does NOT start PostgreSQL; the database is managed by 1Panel and reached
 #     over the Docker host network via host.docker.internal.
-#   - Reads secrets from a server-side .env file maintained via 1Panel file
-#     manager (never committed to git).
+#   - Reads secrets from a server-side .env file (never committed to git).
+#     Casdoor management credentials are synchronized from GitHub Secrets by CI;
+#     other values remain maintained through the 1Panel file manager.
 #
 # Required server-side files in the same directory:
 #   - .env                # real Casdoor / MinIO / DB credentials
