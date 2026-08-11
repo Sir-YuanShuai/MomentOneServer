@@ -9,6 +9,7 @@ from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
 from pywebpush import WebPushException, webpush
+from requests import RequestException
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
@@ -129,6 +130,13 @@ class WebPushSender:
 
         try:
             await asyncio.to_thread(_send)
+        except RequestException as exc:
+            raise ApplicationError(
+                code="PUSH_PROVIDER_UNAVAILABLE",
+                message="通知服务暂时无法连接，请稍后重试。",
+                status_code=503,
+                details={"occurredAt": datetime.now(UTC).isoformat()},
+            ) from exc
         except WebPushException as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if status in (404, 410):
