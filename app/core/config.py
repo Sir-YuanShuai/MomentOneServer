@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     s3_download_url_ttl_seconds: int = Field(default=300, ge=60, le=3600)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
 
+    # ---- Notification worker ----
+    notification_worker_enabled: bool = False
+    notification_poll_interval_seconds: float = Field(default=5, ge=1, le=300)
+    notification_batch_size: int = Field(default=50, ge=1, le=500)
+    notification_worker_id: str = "api-worker"
+
     # ---- MCP Server / MCP Apps ----
     # 对外暴露的基础 URL（发现端点、OAuth 回调都基于它拼绝对地址）
     mcp_base_url: str | None = None

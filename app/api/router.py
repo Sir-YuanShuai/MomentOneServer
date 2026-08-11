@@ -14,6 +14,7 @@ from app.api.routes.mcp_oauth import router as mcp_oauth_router
 from app.api.routes.moments import router as moments_router
 from app.api.routes.oauth import router as oauth_router
 from app.api.routes.push import router as push_router
+from app.api.routes.reminders import router as reminders_router
 from app.api.routes.system import router as system_router
 
 api_router = APIRouter()
@@ -32,3 +33,4 @@ api_router.include_router(mcp_oauth_router)
 api_router.include_router(mcp_discovery_router)
 api_router.include_router(mcp_authorizations_router)
 api_router.include_router(push_router)
+api_router.include_router(reminders_router)

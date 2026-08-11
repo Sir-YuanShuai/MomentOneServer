@@ -15,6 +15,7 @@ from app.core.logging import configure_logging
 from app.core.request_context import request_id_context
 from app.infrastructure.database.session import init_database
 from app.modules.mcp.endpoint import McpComponent
+from app.modules.notifications.worker import NotificationWorker
 from app.modules.usage.recorder import ApiUsageMetric, ApiUsageRecorder
 
 logger = structlog.get_logger()
@@ -106,16 +107,19 @@ def create_application(
 
     mcp_component = mcp_component or McpComponent(resolved_settings)
     usage_recorder = ApiUsageRecorder()
+    notification_worker = NotificationWorker(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         await logger.ainfo("application_started", environment=resolved_settings.env)
         db = init_database(resolved_settings)
         await usage_recorder.start()
+        await notification_worker.start()
         try:
             async with mcp_component.run():
                 yield
         finally:
+            await notification_worker.stop()
             await usage_recorder.stop()
             await db.dispose()
         await logger.ainfo("application_stopped")
