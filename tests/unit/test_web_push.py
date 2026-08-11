@@ -1,7 +1,19 @@
+from uuid import uuid4
+
+import pytest
+from app.core.config import Settings
 from app.core.errors import ApplicationError
-from app.modules.notifications.push import PushSecretCipher, endpoint_hash, validate_push_endpoint
+from app.modules.notifications import push as push_module
+from app.modules.notifications.push import (
+    PushSecretCipher,
+    PushSecrets,
+    WebPushSender,
+    endpoint_hash,
+    validate_push_endpoint,
+)
 from cryptography.fernet import Fernet
 from fastapi import status
+from requests import ConnectionError as RequestsConnectionError
 
 
 def test_push_secret_cipher_round_trip() -> None:
@@ -38,3 +50,34 @@ def test_validate_push_endpoint_rejects_ssrf_targets() -> None:
             assert exc.status_code == status.HTTP_400_BAD_REQUEST
         else:
             raise AssertionError(f"unsafe endpoint accepted: {endpoint}")
+
+
+@pytest.mark.asyncio
+async def test_sender_maps_provider_network_failure_to_service_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        web_push_enabled=True,
+        web_push_vapid_public_key="public-key",
+        web_push_vapid_private_key="private-key",
+        web_push_vapid_subject="mailto:ops@example.com",
+        web_push_subscription_encryption_key=Fernet.generate_key().decode(),
+    )
+
+    def fail_delivery(**_kwargs: object) -> None:
+        raise RequestsConnectionError("network unavailable")
+
+    monkeypatch.setattr(push_module, "webpush", fail_delivery)
+
+    with pytest.raises(ApplicationError) as caught:
+        await WebPushSender(settings).send_test(
+            subscription=PushSecrets(
+                endpoint="https://fcm.googleapis.com/example",
+                p256dh="test-p256dh",
+                auth="test-auth",
+            ),
+            notification_id=uuid4(),
+        )
+
+    assert caught.value.code == "PUSH_PROVIDER_UNAVAILABLE"
+    assert caught.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
