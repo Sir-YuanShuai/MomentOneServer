@@ -119,6 +119,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | POST | `/v1/moments` | 已实现 | 创建 Moment（支持 assetIds 关联媒体） |
 | GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页，支持 type/category/tag/goalId 过滤，响应含 media 数组） |
 | GET | `/v1/moments/{id}` | 已实现 | 详情（含 media 数组 + downloadUrl） |
+| POST/GET | `/v1/data/bookkeeping/*` | 已实现 | Excel 结构识别、批量导入、完整导出、分类清空（两阶段确认） |
 | PATCH | `/v1/moments/{id}` | 已实现 | 修改（乐观锁） |
 | DELETE | `/v1/moments/{id}` | 已实现 | 软删除（两阶段确认） |
 | POST | `/v1/assets/upload-intents` | 已实现 | 创建 Asset + 返回 Presigned PUT URL |

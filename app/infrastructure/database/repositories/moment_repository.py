@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import Moment as MomentORM
@@ -95,6 +97,42 @@ class PostgresMomentRepository:
         self._session.add(orm)
         await self._session.flush()
         return _orm_to_domain(orm)
+
+    async def list_all_by_type(self, user_id: UUID, moment_type: str) -> list[Moment]:
+        result = await self._session.execute(
+            select(MomentORM)
+            .where(
+                MomentORM.user_id == user_id,
+                MomentORM.moment_type == moment_type,
+                MomentORM.deleted_at.is_(None),
+            )
+            .order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc())
+        )
+        return [_orm_to_domain(item) for item in result.scalars().all()]
+
+    async def count_by_type(self, user_id: UUID, moment_type: str) -> int:
+        result = await self._session.scalar(
+            select(func.count())
+            .select_from(MomentORM)
+            .where(
+                MomentORM.user_id == user_id,
+                MomentORM.moment_type == moment_type,
+                MomentORM.deleted_at.is_(None),
+            )
+        )
+        return int(result or 0)
+
+    async def soft_delete_all_by_type(self, user_id: UUID, moment_type: str) -> int:
+        result = await self._session.execute(
+            update(MomentORM)
+            .where(
+                MomentORM.user_id == user_id,
+                MomentORM.moment_type == moment_type,
+                MomentORM.deleted_at.is_(None),
+            )
+            .values(deleted_at=datetime.now(UTC), revision=MomentORM.revision + 1)
+        )
+        return int(cast(CursorResult, result).rowcount or 0)
 
     async def list_by_user(
         self,
