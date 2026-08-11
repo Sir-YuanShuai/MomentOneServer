@@ -155,21 +155,6 @@ class FakeAccountCenterService:
             }
         }
 
-    async def identities(self, user_id: UUID, **_kwargs: object) -> dict[str, object]:
-        assert user_id == USER_ID
-        return {
-            "items": [
-                {
-                    "id": "44444444-4444-4444-8444-444444444444",
-                    "type": "oidc",
-                    "provider": "casdoor",
-                    "identifier": "user@example.com",
-                    "isPrimary": True,
-                }
-            ],
-            "security": {"managementAvailable": True},
-        }
-
     async def start_contact_challenge(self, user_id: UUID, **kwargs: object) -> dict[str, object]:
         assert user_id == USER_ID
         return {
@@ -405,10 +390,10 @@ async def test_audit_query_is_forwarded(app: FastAPI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_account_center_profile_identity_and_link_routes(app: FastAPI) -> None:
+async def test_account_preferences_and_identity_link_routes(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         profile = await client.patch(
-            "/v1/account/profile",
+            "/v1/account/preferences",
             headers={"Idempotency-Key": "profile-idem"},
             json={
                 "locale": "en-US",
@@ -416,7 +401,6 @@ async def test_account_center_profile_identity_and_link_routes(app: FastAPI) -> 
                 "expectedRevision": 1,
             },
         )
-        identities = await client.get("/v1/account/identities")
         challenge = await client.post(
             "/v1/account/contact-challenges",
             headers={"Idempotency-Key": "contact-idem"},
@@ -444,7 +428,6 @@ async def test_account_center_profile_identity_and_link_routes(app: FastAPI) -> 
 
     assert profile.status_code == 200
     assert profile.json()["profile"]["locale"] == "en-US"
-    assert identities.json()["items"][0]["provider"] == "casdoor"
     assert challenge.status_code == 201
     assert link.status_code == 201
     assert provider_unlink.status_code == 204
@@ -456,16 +439,17 @@ def test_account_and_admin_usage_routes_registered(app: FastAPI) -> None:
     paths = app.openapi()["paths"]
     expected = {
         "/v1/account",
-        "/v1/account/profile",
+        "/v1/account/preferences",
         "/v1/account/avatar",
-        "/v1/account/password",
-        "/v1/account/identities",
         "/v1/account/login-providers/{provider}",
         "/v1/account/contact-challenges",
         "/v1/account/link-sessions",
         "/v1/account/merge-preview",
         "/v1/account/delete-preview",
         "/v1/account/delete-confirm",
+        "/v1/insights/overview",
+        "/v1/insights/bookkeeping",
+        "/v1/data/bookkeeping/import-preview",
         "/v1/admin/users/{user_id}/detail",
         "/v1/admin/usage/overview",
         "/v1/admin/plans",

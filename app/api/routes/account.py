@@ -37,16 +37,10 @@ def _account_center_service(
     return AccountCenterService(session, settings)
 
 
-class UpdateProfileRequest(BaseModel):
-    # displayName 已由浏览器直连 Casdoor 修改，此处仅保留本地偏好字段。
+class UpdatePreferencesRequest(BaseModel):
     locale: str = Field(default="zh-CN", min_length=2, max_length=16)
     timezone: str | None = Field(default=None, max_length=64)
     expectedRevision: int = Field(ge=1)
-
-
-class ChangePasswordRequest(BaseModel):
-    oldPassword: str = Field(min_length=1, max_length=256)
-    newPassword: str = Field(min_length=8, max_length=256)
 
 
 class ContactChallengeRequest(BaseModel):
@@ -188,9 +182,9 @@ async def get_account(
     return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
-@router.patch("/profile")
-async def update_profile(
-    body: UpdateProfileRequest,
+@router.patch("/preferences")
+async def update_preferences(
+    body: UpdatePreferencesRequest,
     auth: AuthContext = Depends(get_auth_context),
     service: AccountCenterService = Depends(_account_center_service),
     session: AsyncSession = Depends(get_db_session),
@@ -208,35 +202,6 @@ async def update_profile(
         timezone=body.timezone,
         expected_revision=body.expectedRevision,
     )
-    return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
-
-
-@router.post("/sync")
-async def sync_account_profile(
-    auth: AuthContext = Depends(get_auth_context),
-    settings: Settings = Depends(get_settings),
-    session: AsyncSession = Depends(get_db_session),
-    authorization: str | None = Header(default=None),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> dict[str, object]:
-    """浏览器在 Casdoor 直接修改资料后，把本地 users 表从 Casdoor userinfo 覆盖同步。"""
-    _require_idempotency(idempotency_key)
-    if auth.method != "casdoor":
-        raise ApplicationError(
-            code="WEB_SESSION_REQUIRED", message="请使用 Web 登录同步账号资料。", status_code=403
-        )
-    if not authorization:
-        raise ApplicationError(code="AUTH_REQUIRED", message="请先登录。", status_code=401)
-    token = authorization.removeprefix("Bearer ").strip()
-    verifier = CasdoorTokenVerifier(settings)
-    principal = verifier.verify(token).merge_userinfo(await verifier.fetch_userinfo(token))
-    user = await UserRepository(session).get(auth.user_id)
-    if user is None:
-        raise ApplicationError(code="USER_NOT_FOUND", message="用户不存在。", status_code=404)
-    await UserRepository(session).sync_profile(user, principal, fill_missing_only=False)
-    account = await AccountRepository(session).account(auth.user_id)
-    if account is None:
-        raise ApplicationError(code="USER_NOT_FOUND", message="用户不存在。", status_code=404)
     return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
 
 
@@ -264,56 +229,6 @@ async def upload_avatar(
         access_token=auth.raw_access_token,
     )
     return await _attach_login_providers(account, auth=auth, session=session, settings=settings)
-
-
-@router.post("/password")
-async def change_password(
-    body: ChangePasswordRequest,
-    auth: AuthContext = Depends(get_auth_context),
-    service: AccountCenterService = Depends(_account_center_service),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> dict[str, bool]:
-    _require_idempotency(idempotency_key)
-    if auth.method != "casdoor":
-        raise ApplicationError(
-            code="REAUTHENTICATION_REQUIRED",
-            message="修改密码必须使用用户自己的身份会话。",
-            status_code=401,
-        )
-    await service.change_password(
-        auth.user_id,
-        old_password=body.oldPassword,
-        new_password=body.newPassword,
-        issued_at=auth.issued_at,
-        access_token=auth.raw_access_token,
-    )
-    return {"changed": True}
-
-
-@router.get("/identities")
-async def list_identities(
-    auth: AuthContext = Depends(get_auth_context),
-    service: AccountCenterService = Depends(_account_center_service),
-) -> dict[str, object]:
-    return await service.identities(auth.user_id, access_token=auth.raw_access_token)
-
-
-@router.delete("/sessions/{session_name}", status_code=204)
-async def revoke_session(
-    session_name: str,
-    application: str,
-    auth: AuthContext = Depends(get_auth_context),
-    service: AccountCenterService = Depends(_account_center_service),
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> Response:
-    _require_idempotency(idempotency_key)
-    await service.revoke_session(
-        auth.user_id,
-        session_name=session_name,
-        application=application,
-        access_token=auth.raw_access_token,
-    )
-    return Response(status_code=204)
 
 
 @router.delete("/login-providers/{provider}", status_code=204)

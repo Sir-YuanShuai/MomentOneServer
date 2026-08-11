@@ -330,6 +330,15 @@ class DeleteConfirmRequest(BaseModel):
     confirmationId: str
 
 
+class BatchDeleteItem(BaseModel):
+    id: UUID
+    expectedRevision: int = Field(ge=1)
+
+
+class BatchDeletePreviewRequest(BaseModel):
+    items: list[BatchDeleteItem] = Field(min_length=1, max_length=100)
+
+
 class CursorPageResponse(BaseModel):
     items: list[dict]
     nextCursor: str | None = None
@@ -515,6 +524,116 @@ async def create_moment(
         )
 
     return response
+
+
+@router.post("/batch-delete-preview", response_model=dict)
+async def batch_delete_preview(
+    body: BatchDeletePreviewRequest,
+    user_id: UUID = Depends(_get_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    ids = [item.id for item in body.items]
+    if len(ids) != len(set(ids)):
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="批量删除不能包含重复记录。", status_code=400
+        )
+    repo = PostgresMomentRepository(session)
+    preview_items: list[dict] = []
+    for item in body.items:
+        moment = await repo.get_by_id(item.id, user_id)
+        if moment is None:
+            raise ApplicationError(
+                code="MOMENT_NOT_FOUND", message="部分记录不存在或无权访问。", status_code=404
+            )
+        if moment.revision != item.expectedRevision:
+            raise ApplicationError(
+                code="REVISION_CONFLICT",
+                message="部分记录已经变化，请刷新后重试。",
+                status_code=409,
+                details={"momentId": str(item.id), "actualRevision": moment.revision},
+            )
+        preview_items.append(
+            {"id": str(moment.id), "revision": moment.revision, "title": moment.title}
+        )
+    expires_at = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=5)
+    confirmation = await SqlConfirmationRepository(session).create(
+        user_id=user_id,
+        target_type="moments",
+        target_id=uuid4(),
+        action="batch_delete",
+        expected_revision=len(preview_items),
+        preview={"items": preview_items},
+        expires_at=expires_at,
+    )
+    return {
+        "confirmationId": str(confirmation.id),
+        "expiresAt": expires_at.isoformat(),
+        "count": len(preview_items),
+        "items": preview_items,
+    }
+
+
+@router.post("/batch-delete-confirm", response_model=dict)
+async def batch_delete_confirm(
+    body: DeleteConfirmRequest,
+    user_id: UUID = Depends(_get_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    confirmations = SqlConfirmationRepository(session)
+    confirmation = await confirmations.get(UUID(body.confirmationId))
+    if (
+        confirmation is None
+        or confirmation.user_id != user_id
+        or confirmation.target_type != "moments"
+        or confirmation.action != "batch_delete"
+    ):
+        raise ApplicationError(
+            code="CONFIRMATION_REQUIRED", message="请先执行批量删除预览。", status_code=400
+        )
+    if confirmation.status != "pending" or datetime.now(UTC) > confirmation.expires_at:
+        raise ApplicationError(
+            code="CONFIRMATION_EXPIRED", message="确认已失效，请重新预览。", status_code=400
+        )
+    raw_items = confirmation.preview.get("items")
+    if not isinstance(raw_items, list):
+        raise ApplicationError(
+            code="CONFIRMATION_REQUIRED", message="批量删除预览无效。", status_code=400
+        )
+    repo = PostgresMomentRepository(session)
+    resolved: list[Moment] = []
+    for raw in raw_items:
+        moment = await repo.get_by_id(UUID(str(raw["id"])), user_id)
+        if moment is None or moment.revision != int(raw["revision"]):
+            raise ApplicationError(
+                code="REVISION_CONFLICT",
+                message="部分记录已经变化，请重新预览。",
+                status_code=409,
+            )
+        resolved.append(moment)
+    now = datetime.now(UTC)
+    await confirmations.mark_used(confirmation_id=confirmation.id, used_at=now)
+    revision_repo = SqlMomentRevisionRepository(session)
+    for moment in resolved:
+        deleted = await repo.soft_delete(moment.id, user_id)
+        if deleted is not None:
+            await revision_repo.append(
+                user_id=user_id,
+                moment_id=deleted.id,
+                revision=deleted.revision,
+                operation="deleted",
+                snapshot=_to_dict(deleted),
+                actor_user_id=user_id,
+            )
+    await SqlAuditEventRepository(session).append(
+        user_id=user_id,
+        actor_type="web",
+        actor_id=str(user_id),
+        event_type="moments.batch_deleted",
+        resource_type="moment",
+        allowed=True,
+        metadata={"count": len(resolved)},
+    )
+    return {"deletedCount": len(resolved)}
 
 
 @router.get("/{moment_id}", response_model=dict)

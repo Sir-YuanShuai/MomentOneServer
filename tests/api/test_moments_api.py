@@ -1042,3 +1042,28 @@ async def test_create_moment_with_persons_item_too_long(app: FastAPI) -> None:
             json={"title": "超长人物", "persons": ["x" * 21]},
         )
     assert resp.status_code == 422  # Pydantic 校验拒绝
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_uses_one_preview_and_one_confirm(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = (await client.post("/v1/moments", json={"title": "第一条"})).json()
+        second = (await client.post("/v1/moments", json={"title": "第二条"})).json()
+        preview = await client.post(
+            "/v1/moments/batch-delete-preview",
+            json={
+                "items": [
+                    {"id": first["id"], "expectedRevision": first["revision"]},
+                    {"id": second["id"], "expectedRevision": second["revision"]},
+                ]
+            },
+        )
+        confirmed = await client.post(
+            "/v1/moments/batch-delete-confirm",
+            json={"confirmationId": preview.json()["confirmationId"]},
+        )
+    assert preview.status_code == 200
+    assert preview.json()["count"] == 2
+    assert confirmed.status_code == 200
+    assert confirmed.json()["deletedCount"] == 2
