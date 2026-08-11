@@ -48,6 +48,22 @@ class Settings(BaseSettings):
     account_link_redirect_uri: str | None = None
     web_base_url: str = "http://localhost:3000"
 
+    # ---- PWA Web Push ----
+    web_push_enabled: bool = False
+    web_push_vapid_public_key: str | None = None
+    web_push_vapid_private_key: str | None = None
+    web_push_vapid_subject: str | None = None
+    # Fernet key，用于加密 Push endpoint / p256dh / auth；启用 Web Push 时必填。
+    web_push_subscription_encryption_key: str | None = None
+    web_push_allowed_endpoint_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "fcm.googleapis.com",
+            "updates.push.services.mozilla.com",
+            "web.push.apple.com",
+            "push.apple.com",
+        ]
+    )
+
     # 眼镜端 JWT 自签发（QR Binding 授权）
     jwt_private_key_path: str | None = None
     jwt_public_key_path: str | None = None
@@ -106,6 +122,28 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [scope.strip() for scope in value.split(",") if scope.strip()]
         return value
+
+    @field_validator("web_push_allowed_endpoint_hosts", mode="before")
+    @classmethod
+    def parse_web_push_hosts(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [host.strip().lower() for host in value.split(",") if host.strip()]
+        return value
+
+    @model_validator(mode="after")
+    def validate_web_push_configuration(self) -> "Settings":
+        if not self.web_push_enabled:
+            return self
+        required = {
+            "web_push_vapid_public_key": self.web_push_vapid_public_key,
+            "web_push_vapid_private_key": self.web_push_vapid_private_key,
+            "web_push_vapid_subject": self.web_push_vapid_subject,
+            "web_push_subscription_encryption_key": self.web_push_subscription_encryption_key,
+        }
+        missing = [name for name, value in required.items() if not str(value or "").strip()]
+        if missing:
+            raise ValueError(f"Web Push configuration is incomplete: {', '.join(missing)}")
+        return self
 
     @model_validator(mode="after")
     def validate_casdoor_tenant_contract(self) -> "Settings":

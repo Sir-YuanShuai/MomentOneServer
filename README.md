@@ -218,6 +218,13 @@ CI 当前不调用远程 Casdoor 或 MinIO/S3，也不需要相关真实 Secret�
    MOMENT_ONE_S3_BUCKET=moment-one-media
    MOMENT_ONE_S3_ACCESS_KEY=你的access-key
    MOMENT_ONE_S3_SECRET_KEY=你的secret-key
+
+   # PWA Web Push（启用前生成 VAPID 密钥对与独立 Fernet 加密密钥）
+   MOMENT_ONE_WEB_PUSH_ENABLED=true
+   MOMENT_ONE_WEB_PUSH_VAPID_PUBLIC_KEY=你的VAPID公钥
+   MOMENT_ONE_WEB_PUSH_VAPID_PRIVATE_KEY=你的VAPID私钥
+   MOMENT_ONE_WEB_PUSH_VAPID_SUBJECT=mailto:你的运维邮箱
+   MOMENT_ONE_WEB_PUSH_SUBSCRIPTION_ENCRYPTION_KEY=你的Fernet密钥
    ```
 6. **服务器登录 GHCR**（拉私有镜像需要，只需 `read:packages` 权限的 PAT）：
    ```bash

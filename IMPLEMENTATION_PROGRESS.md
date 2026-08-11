@@ -1,6 +1,6 @@
 # MomentOneServer — 实现进度
 
-> 文档状态：Current  |  更新日期：2026-08-09
+> 文档状态：Current  |  更新日期：2026-08-11
 >
 > 本文件记录**当前已实现的代码、表和 API**，是高频更新的"现状快照"。
 > 目标设计见 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md)，
@@ -143,6 +143,10 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | PATCH | `/v1/habit-goals/{id}` | 已实现 | 修改习惯目标（乐观锁） |
 | POST | `/v1/habit-goals/{id}/delete-preview` | 已实现 | 删除预览（两阶段） |
 | POST | `/v1/habit-goals/delete-confirm` | 已实现 | 删除确认 |
+| GET | `/v1/push/config` | 已实现（通道第一批） | Web Push 功能状态与 VAPID 公钥 |
+| GET/POST | `/v1/push/subscriptions` | 已实现（通道第一批） | 通知终端列表与幂等注册，敏感字段加密保存 |
+| DELETE | `/v1/push/subscriptions/{id}` | 已实现（通道第一批） | 撤销单个通知终端 |
+| POST | `/v1/push/test` | 已实现（通道第一批） | 向当前用户指定终端发送测试通知 |
 
 ## 已实现的迁移
 
@@ -161,6 +165,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | `0011_add_frequency_and_color_to_habit_goals` | habit_goals 表新增 frequency / times_per_week / color 列（对标习惯打卡 App，ADR-0020） |
 | `0012_create_mcp_oauth_tables` | 创建 mcp_oauth_clients / mcp_oauth_codes 表（MCP OAuth DCR 客户端 + 授权码/事务状态） |
 | `0018_add_admin_operations_fields` | users 增加状态/版本/活动时间，device_bindings 与 mcp_authorizations 增加 revision |
+| `0023_create_push_subscriptions` | 创建加密存储的 PWA Web Push 终端表 |
 
 ## 已实现的模块
 
@@ -183,6 +188,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 | Quota Metering / Usage Analytics | `app/modules/quotas/` + `app/modules/mcp/quota_middleware.py` + `app/modules/admin/analytics.py` | 第二批已实现（MCP Tool/写 Tool/Planner/API 请求计量、Scope+Entitlement+Quota 工具过滤、设备/MCP客户端上限、用户与管理员用量视图） |
 | Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |
+| PWA Web Push | `app/modules/notifications/` + `app/api/routes/push.py` | 通道第一批已实现（配置、订阅生命周期、测试投递、SSRF host 约束、加密存储）；Reminder、Outbox、Worker 和业务调度待后续阶段 |
 
 ## 未实现的目标表
 

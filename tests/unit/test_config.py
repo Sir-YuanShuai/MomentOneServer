@@ -42,3 +42,28 @@ def test_casdoor_tenant_contract_rejects_different_client_application() -> None:
             casdoor_application_id="admin/MomentOne",
             casdoor_mcp_client_id="another-application-client",
         )
+
+
+def test_web_push_enabled_requires_complete_secret_set() -> None:
+    with pytest.raises(ValidationError, match="web_push_vapid_private_key"):
+        Settings(
+            web_push_enabled=True,
+            web_push_vapid_public_key="public",
+            web_push_vapid_private_key=None,
+            web_push_vapid_subject=None,
+            web_push_subscription_encryption_key=None,
+        )
+
+
+def test_web_push_endpoint_hosts_accept_comma_separated_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "MOMENT_ONE_WEB_PUSH_ALLOWED_ENDPOINT_HOSTS",
+        "fcm.googleapis.com, web.push.apple.com",
+    )
+    settings = Settings()
+    assert settings.web_push_allowed_endpoint_hosts == [
+        "fcm.googleapis.com",
+        "web.push.apple.com",
+    ]

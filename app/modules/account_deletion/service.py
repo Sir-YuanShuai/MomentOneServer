@@ -15,6 +15,7 @@ from app.infrastructure.database.models import (
     Moment,
     MomentAsset,
     MomentRevision,
+    PushSubscription,
     User,
 )
 from app.infrastructure.database.repositories.confirmation_repository import (
@@ -48,6 +49,7 @@ class AccountDeletionService:
             "habitGoals": await count(HabitGoal, HabitGoal.user_id == user_id),
             "deviceBindings": await count(DeviceBinding, DeviceBinding.user_id == user_id),
             "mcpAuthorizations": await count(McpAuthorization, McpAuthorization.user_id == user_id),
+            "pushSubscriptions": await count(PushSubscription, PushSubscription.user_id == user_id),
         }
         confirmation = await self._confirmations.create(
             user_id=user_id,
