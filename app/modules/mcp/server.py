@@ -83,6 +83,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "habit_goal_create": "创建一个每日或每周习惯目标，需要 moments.write。",
     "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
     "habit_progress": "返回习惯目标在最近若干天的完成情况、今日状态与连续天数。",
+    "reminder_create": (
+        "创建由 Moment One Server 调度的提醒。需要 moments.write、未来的带时区 dueAt "
+        "以及 idempotencyKey；即使前端未打开，到期后也会按账号通知设置投递。"
+    ),
     "agent_plan": (
         "把用户完整原话规划为一个当前已注册、参数合法且 Scope 允许的真实 MCP Tool。"
         "只返回 toolName/arguments/reply，不直接伪造业务结果。"
@@ -193,6 +197,7 @@ def build_mcp_server(
     _register_agent_plan(server, env)
     _register_a2ui_action(server, env)
     _register_account_entitlements(server, env)
+    _register_reminder_create(server, env)
     _register_bookkeeping_prompt(server)
     server.middleware.append(McpToolVisibilityMiddleware(env))
 
@@ -743,6 +748,37 @@ def _register_account_entitlements(server: MCPServer, env: McpToolEnv) -> None:
         return await env.call(
             tools.account_entitlements,
             tool_name="account_entitlements",
+        )
+
+
+def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="reminder_create",
+        description=_TOOL_DESCRIPTIONS["reminder_create"],
+        title="创建提醒",
+    )
+    async def reminder_create(  # pyright: ignore[reportUnusedFunction]
+        title: Annotated[str, Field(min_length=1, max_length=160)],
+        dueAt: Annotated[str, Field(description="带时区的 ISO-8601 未来时间")],
+        timezone: Annotated[str, Field(description="IANA 时区，如 Asia/Shanghai")],
+        idempotencyKey: Annotated[str, Field(min_length=8, max_length=160)],
+        note: Annotated[str | None, Field(default=None, max_length=2000)] = None,
+        scene: Annotated[
+            Literal["general", "bookkeeping", "habit"], Field(default="general")
+        ] = "general",
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.reminder_create(
+                ctx,
+                title=title,
+                note=note,
+                scene=scene,
+                due_at=dueAt,
+                timezone_name=timezone,
+                idempotency_key=idempotencyKey,
+            ),
+            tool_name="reminder_create",
+            idempotency_key=idempotencyKey,
         )
 
 

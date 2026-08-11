@@ -41,6 +41,10 @@ from app.infrastructure.database.repositories.moment_repository import (
 from app.infrastructure.database.repositories.moment_revision_repository import (
     SqlMomentRevisionRepository,
 )
+from app.infrastructure.database.repositories.notification_repository import (
+    NotificationPipelineRepository,
+    ReminderRepository,
+)
 from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport, build_a2ui_result, build_text_summary
 from app.modules.mcp.scope import has_scope
@@ -51,6 +55,7 @@ from app.modules.moments.domain import (
     MomentProvenance,
     ProvenanceSource,
 )
+from app.modules.notifications.reminders import ReminderService, serialize_reminder
 
 SCHEMA_VERSION = "1.0"
 
@@ -1581,6 +1586,78 @@ async def account_entitlements(ctx: McpCallContext) -> CallToolResult:
 # 通用工具规划与 A2UI Action
 # ---------------------------------------------------------------------------
 
+
+async def reminder_create(
+    ctx: McpCallContext,
+    *,
+    title: str,
+    note: str | None,
+    scene: str,
+    due_at: str,
+    timezone_name: str,
+    idempotency_key: str,
+) -> CallToolResult:
+    """创建由 Server 调度的提醒；MCP 与 Web 共用同一通知管线。"""
+    ctx.require_scope("moments.write")
+    try:
+        parsed_due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="dueAt 必须是带时区的 ISO-8601 时间。",
+            status_code=400,
+        ) from exc
+    request_body = {
+        "title": title,
+        "note": note,
+        "scene": scene,
+        "dueAt": due_at,
+        "timezone": timezone_name,
+    }
+    idempotency = SqlIdempotencyRepository(ctx.session)
+    record = await idempotency.acquire(
+        user_id=ctx.user_id,
+        operation="reminder_create",
+        idempotency_key=idempotency_key,
+        request_payload=request_body,
+    )
+    if record.request_fingerprint != fingerprint_payload(request_body):
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="idempotencyKey 已用于不同的请求体。",
+            status_code=409,
+        )
+    if record.state == "completed" and record.response_body is not None:
+        return _text_result(record.response_body)
+    reminder = await ReminderService(
+        ReminderRepository(ctx.session),
+        NotificationPipelineRepository(ctx.session),
+    ).create(
+        user_id=ctx.user_id,
+        title=title,
+        body=note,
+        scene=scene,
+        due_at=parsed_due_at,
+        timezone=timezone_name,
+        source_type="mcp",
+        correlation_id=ctx.request_id or idempotency_key,
+    )
+    response = {"reminder": serialize_reminder(reminder)}
+    await idempotency.complete(
+        record_id=record.id,
+        response_status=201,
+        response_body=response,
+        resource_id=reminder.id,
+    )
+    await _append_tool_audit(
+        ctx,
+        tool="reminder_create",
+        resource_id=reminder.id,
+        metadata={"scene": scene},
+    )
+    return _text_result(response)
+
+
 _TOOL_SCOPE: dict[str, str] = {
     "bookkeeping_create": "moments.write",
     "bookkeeping_list": "moments.read",
@@ -1595,6 +1672,7 @@ _TOOL_SCOPE: dict[str, str] = {
     "habit_goal_create": "moments.write",
     "habit_checkin_create": "moments.write",
     "habit_progress": "moments.read",
+    "reminder_create": "moments.write",
     "a2ui_action": "moments.read",
 }
 
@@ -1840,6 +1918,7 @@ __all__ = [
     "habit_goal_create",
     "habit_checkin_create",
     "habit_progress",
+    "reminder_create",
     "agent_plan",
     "a2ui_action",
     "err_result",
