@@ -12,6 +12,7 @@ from app.api.routes.mcp_authorizations import router as mcp_authorizations_route
 from app.api.routes.mcp_discovery import router as mcp_discovery_router
 from app.api.routes.mcp_oauth import router as mcp_oauth_router
 from app.api.routes.moments import router as moments_router
+from app.api.routes.notifications import router as notifications_router
 from app.api.routes.oauth import router as oauth_router
 from app.api.routes.push import router as push_router
 from app.api.routes.reminders import router as reminders_router
@@ -34,3 +35,4 @@ api_router.include_router(mcp_discovery_router)
 api_router.include_router(mcp_authorizations_router)
 api_router.include_router(push_router)
 api_router.include_router(reminders_router)
+api_router.include_router(notifications_router)

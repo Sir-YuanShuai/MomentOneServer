@@ -130,6 +130,7 @@ class InAppNotification(Base):
     source_type: Mapped[str | None] = mapped_column(String(48))
     source_id: Mapped[str | None] = mapped_column(String(120))
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -2,6 +2,7 @@ import asyncio
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from sqlalchemy import or_, select, update
@@ -199,6 +200,13 @@ class NotificationWorker:
                 job.locked_at = None
                 job.locked_by = None
                 return
+            quiet_hours_end = self._quiet_hours_end(preference)
+            if quiet_hours_end is not None:
+                job.status = "retry"
+                job.next_attempt_at = quiet_hours_end
+                job.locked_at = None
+                job.locked_by = None
+                return
             notification = await session.scalar(
                 select(InAppNotification).where(
                     InAppNotification.deduplication_key == job.deduplication_key
@@ -315,6 +323,32 @@ class NotificationWorker:
 
     def _sender(self) -> WebPushSender:
         return WebPushSender(self._settings)
+
+    @staticmethod
+    def _quiet_hours_end(preference: NotificationPreference | None) -> datetime | None:
+        if (
+            preference is None
+            or not preference.quiet_hours_enabled
+            or preference.quiet_hours_start is None
+            or preference.quiet_hours_end is None
+        ):
+            return None
+        try:
+            timezone = ZoneInfo(preference.timezone)
+        except ZoneInfoNotFoundError:
+            timezone = ZoneInfo("UTC")
+        now = datetime.now(timezone)
+        start = preference.quiet_hours_start
+        end = preference.quiet_hours_end
+        inside = (
+            start <= now.time() < end if start < end else now.time() >= start or now.time() < end
+        )
+        if not inside:
+            return None
+        end_date = now.date()
+        if start >= end and now.time() >= start:
+            end_date += timedelta(days=1)
+        return datetime.combine(end_date, end, timezone).astimezone(UTC)
 
     def _secrets(self, subscription: PushSubscription) -> PushSecrets:
         key = self._settings.web_push_subscription_encryption_key

@@ -118,6 +118,7 @@ def upgrade() -> None:
         sa.Column("source_type", sa.String(48)),
         sa.Column("source_id", sa.String(120)),
         sa.Column("read_at", sa.DateTime(timezone=True)),
+        sa.Column("revision", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
     op.create_index("ix_notifications_user_id", "notifications", ["user_id"])

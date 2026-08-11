@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models.notification import (
+    InAppNotification,
     NotificationJob,
+    NotificationPreference,
     OutboxEvent,
     Reminder,
 )
@@ -69,3 +71,52 @@ class NotificationPipelineRepository:
                 status="cancelled", locked_at=None, locked_by=None, updated_at=datetime.now(UTC)
             )
         )
+
+
+class NotificationCenterRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_preferences(self, user_id: UUID) -> NotificationPreference | None:
+        return await self._session.get(NotificationPreference, user_id)
+
+    async def save_preferences(self, preferences: NotificationPreference) -> NotificationPreference:
+        self._session.add(preferences)
+        await self._session.flush()
+        return preferences
+
+    async def list_notifications(
+        self, user_id: UUID, *, unread_only: bool, limit: int
+    ) -> list[InAppNotification]:
+        query = select(InAppNotification).where(InAppNotification.user_id == user_id)
+        if unread_only:
+            query = query.where(InAppNotification.read_at.is_(None))
+        result = await self._session.execute(
+            query.order_by(InAppNotification.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def get_notification(
+        self, notification_id: UUID, user_id: UUID
+    ) -> InAppNotification | None:
+        return await self._session.scalar(
+            select(InAppNotification).where(
+                InAppNotification.id == notification_id,
+                InAppNotification.user_id == user_id,
+            )
+        )
+
+    async def count_unread(self, user_id: UUID) -> int:
+        return int(
+            await self._session.scalar(
+                select(func.count(InAppNotification.id)).where(
+                    InAppNotification.user_id == user_id,
+                    InAppNotification.read_at.is_(None),
+                )
+            )
+            or 0
+        )
+
+    async def save_notification(self, notification: InAppNotification) -> None:
+        self._session.add(notification)
+        await self._session.flush()

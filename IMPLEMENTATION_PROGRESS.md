@@ -152,6 +152,9 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET/PATCH | `/v1/reminders/{id}` | 已实现（通知第二批） | 提醒详情与 revision 乐观锁更新 |
 | POST | `/v1/reminders/{id}/complete`、`cancel` | 已实现（通知第二批） | 完成或取消提醒并写入 Outbox |
 | POST | `/v1/reminders/{id}/delete-preview`、`/v1/reminders/delete-confirm` | 已实现（通知第二批） | 提醒两阶段软删除 |
+| GET/PATCH | `/v1/notification-preferences` | 已实现（通知第三批） | 服务端通知分类、免打扰、时区与锁屏详情偏好 |
+| GET | `/v1/notifications` | 已实现（通知第三批） | 站内通知列表与未读总数 |
+| POST | `/v1/notifications/{id}/read` | 已实现（通知第三批） | revision 乐观锁标记已读 |
 
 ## 已实现的迁移
 
@@ -194,7 +197,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 | Quota Metering / Usage Analytics | `app/modules/quotas/` + `app/modules/mcp/quota_middleware.py` + `app/modules/admin/analytics.py` | 第二批已实现（MCP Tool/写 Tool/Planner/API 请求计量、Scope+Entitlement+Quota 工具过滤、设备/MCP客户端上限、用户与管理员用量视图） |
 | Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |
-| PWA Web Push | `app/modules/notifications/` + `app/api/routes/push.py` + `app/api/routes/reminders.py` | 第二批已实现：订阅生命周期、多终端测试投递、Reminder API、事务 Outbox、`SKIP LOCKED` Worker、任务重试、站内通知落库及逐终端投递审计；偏好和站内通知读取 API、习惯/MCP 事件接入待后续阶段 |
+| PWA Web Push | `app/modules/notifications/` + `app/api/routes/push.py` + `app/api/routes/reminders.py` + `app/api/routes/notifications.py` | 第三批已实现：订阅生命周期、多终端投递、Reminder API、事务 Outbox、`SKIP LOCKED` Worker、重试、站内通知、逐终端审计、服务端偏好与免打扰延期；习惯/MCP 事件接入待后续阶段 |
 
 ## 未实现的目标表
 
