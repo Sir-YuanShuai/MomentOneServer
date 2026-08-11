@@ -89,9 +89,9 @@ class AccountCenterService:
                 status_code=409,
                 details={"actualRevision": user.revision},
             )
-        # displayName / avatar 等身份资料由浏览器直连 Casdoor 修改（用户自助），
-        # 服务端这里只保存本地偏好（语言 / 时区）。本地资料的一致性由 /v1/account/sync
-        # 从 Casdoor userinfo 覆盖同步来保证。
+        # displayName 等身份资料由浏览器使用用户 Token 直连 Casdoor；
+        # 服务端这里只保存 Moment One 应用偏好（语言 / 时区）。账号快照读取时会从
+        # Casdoor userinfo 同步最新展示资料，无需额外 sync 写接口。
         user.locale = locale
         user.timezone = timezone
         user.revision += 1
@@ -158,115 +158,6 @@ class AccountCenterService:
         account = await AccountRepository(self._session).account(user_id)
         assert account is not None
         return account
-
-    async def change_password(
-        self,
-        user_id: UUID,
-        *,
-        old_password: str,
-        new_password: str,
-        issued_at: int | None,
-        access_token: str | None = None,
-    ) -> None:
-        self._require_recent_auth(issued_at)
-        user = await self._user(user_id)
-        await self._casdoor.set_password(
-            user.casdoor_user_id,
-            old_password=old_password,
-            new_password=new_password,
-            access_token=access_token,
-        )
-        await self._audit(
-            user_id,
-            event_type="account.password.changed",
-            resource_type="user",
-            resource_id=user_id,
-        )
-
-    async def identities(
-        self, user_id: UUID, *, access_token: str | None = None
-    ) -> dict[str, object]:
-        user = await self._user(user_id)
-        # 旧账号第一次访问时补写主 OIDC identity。
-        issuer = str(self._settings.casdoor_issuer or "casdoor").rstrip("/")
-        await self._identities.ensure_oidc(
-            user_id=user_id,
-            issuer=issuer,
-            subject=user.casdoor_sub,
-            identifier=user.email or user.phone,
-            display_name=user.display_name,
-            metadata={"casdoorUserId": user.casdoor_user_id},
-        )
-        security: dict[str, object] = {
-            "preferredMfaType": None,
-            "emailMfaEnabled": False,
-            "phoneMfaEnabled": False,
-            "managementAvailable": self._casdoor.configured,
-            "sessions": [],
-        }
-        if self._casdoor.configured:
-            try:
-                remote = await self._casdoor.get_user(
-                    user.casdoor_user_id, access_token=access_token
-                )
-                sessions = [
-                    self._session_dict(item)
-                    for item in await self._casdoor.get_sessions(
-                        str(remote.get("owner") or ""), access_token=access_token
-                    )
-                    if str(item.get("name") or "") == str(remote.get("name") or "")
-                ]
-                security.update(
-                    {
-                        "preferredMfaType": remote.get("preferredMfaType") or None,
-                        "emailMfaEnabled": bool(remote.get("mfaEmailEnabled")),
-                        "phoneMfaEnabled": bool(remote.get("mfaPhoneEnabled")),
-                        "sessions": sessions,
-                    }
-                )
-            except ApplicationError:
-                security["managementAvailable"] = False
-        return {
-            "items": [
-                self._identity_dict(item) for item in await self._identities.list_for_user(user_id)
-            ],
-            "security": security,
-        }
-
-    async def revoke_session(
-        self,
-        user_id: UUID,
-        *,
-        session_name: str,
-        application: str,
-        access_token: str | None = None,
-    ) -> None:
-        user = await self._user(user_id)
-        remote = await self._casdoor.get_user(user.casdoor_user_id, access_token=access_token)
-        sessions = await self._casdoor.get_sessions(
-            str(remote.get("owner") or ""), access_token=access_token
-        )
-        target = next(
-            (
-                item
-                for item in sessions
-                if str(item.get("name") or "") == session_name
-                and str(item.get("application") or "") == application
-                and str(item.get("name") or "") == str(remote.get("name") or "")
-            ),
-            None,
-        )
-        if target is None:
-            raise ApplicationError(
-                code="SESSION_NOT_FOUND", message="登录会话不存在。", status_code=404
-            )
-        await self._casdoor.delete_session(target, access_token=access_token)
-        await self._audit(
-            user_id,
-            event_type="account.session.revoked",
-            resource_type="identity_session",
-            metadata={"application": application},
-        )
 
     async def unlink_login_provider(
         self,
@@ -937,16 +828,6 @@ class AccountCenterService:
         if len(value) <= 4:
             return "****"
         return f"{value[:3]}****{value[-3:]}"
-
-    @staticmethod
-    def _session_dict(item: dict[str, object]) -> dict[str, object]:
-        session_ids = item.get("sessionId")
-        return {
-            "name": str(item.get("name") or ""),
-            "application": str(item.get("application") or ""),
-            "createdAt": item.get("createdTime"),
-            "sessionCount": len(session_ids) if isinstance(session_ids, list) else 0,
-        }
 
     @staticmethod
     def _identity_dict(item: UserIdentity) -> dict[str, object]:

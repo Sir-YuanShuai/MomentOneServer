@@ -182,7 +182,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
 | Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 | Quota Metering / Usage Analytics | `app/modules/quotas/` + `app/modules/mcp/quota_middleware.py` + `app/modules/admin/analytics.py` | 第二批已实现（MCP Tool/写 Tool/Planner/API 请求计量、Scope+Entitlement+Quota 工具过滤、设备/MCP客户端上限、用户与管理员用量视图） |
-| Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（头像/套餐/额度查询、Casdoor 资料同步、注销 Preview+近期重认证+Confirm、对象和业务数据永久删除） |
+| Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |
 
 ## 未实现的目标表
 

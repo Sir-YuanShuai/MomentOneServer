@@ -110,6 +110,28 @@ class PostgresMomentRepository:
         )
         return [_orm_to_domain(item) for item in result.scalars().all()]
 
+    async def list_by_type_and_time(
+        self,
+        user_id: UUID,
+        moment_type: str,
+        *,
+        occurred_from: datetime | None = None,
+        occurred_to: datetime | None = None,
+    ) -> list[Moment]:
+        stmt = select(MomentORM).where(
+            MomentORM.user_id == user_id,
+            MomentORM.moment_type == moment_type,
+            MomentORM.deleted_at.is_(None),
+        )
+        if occurred_from is not None:
+            stmt = stmt.where(MomentORM.occurred_at >= occurred_from)
+        if occurred_to is not None:
+            stmt = stmt.where(MomentORM.occurred_at <= occurred_to)
+        result = await self._session.execute(
+            stmt.order_by(MomentORM.occurred_at.asc(), MomentORM.id.asc())
+        )
+        return [_orm_to_domain(item) for item in result.scalars().all()]
+
     async def count_by_type(self, user_id: UUID, moment_type: str) -> int:
         result = await self._session.scalar(
             select(func.count())
