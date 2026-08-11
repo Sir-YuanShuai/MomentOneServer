@@ -970,4 +970,8 @@ SELECT confirmation FOR UPDATE
 - `account_link_sessions`：第二身份 PKCE 绑定事务和冲突状态；
 - `contact_verification_challenges`：邮箱/手机号验证码事务，保存原值、期望 revision 和回滚信息。
 
+`email_verified` / `phone_verified` 仅由 Moment One Server 完成验证码挑战后写入；
+Casdoor/OIDC Claim 只同步联系方式，不作为验证状态的权威来源。迁移 0022 会按匹配的
+active `user_identities` 联系方式记录清理历史非权威标记。
+
 `(issuer, subject)` 继续保持全局唯一；邮箱和手机号分别使用 `issuer=email/phone` 的规范化 Subject。账号删除通过 `users.id ON DELETE CASCADE` 清理上述数据。

@@ -55,6 +55,12 @@ class UserRepository:
         *,
         fill_missing_only: bool = True,
     ) -> UserORM:
+        # 联系方式一旦绕过本系统挑战发生变化，原验证结果必须立即失效。
+        if principal.email and principal.email != user.email:
+            user.email_verified = False
+        if principal.phone and principal.phone != user.phone:
+            user.phone_verified = False
+
         def assign(field: str, value: object) -> None:
             if value is None or value == "":
                 return
@@ -65,10 +71,9 @@ class UserRepository:
         assign("email", principal.email)
         assign("phone", principal.phone)
         assign("avatar_url", principal.avatar_url)
-        if principal.email_verified is not None:
-            user.email_verified = principal.email_verified
-        if principal.phone_verified is not None:
-            user.phone_verified = principal.phone_verified
+        # 验证状态只能由 Moment One 的验证码挑战写入。Casdoor 的普通用户
+        # update-user 可携带 emailVerified，且 Casdoor 没有 phoneVerified 字段，
+        # 因此 OIDC/userinfo claim 不能作为本系统的验证权威来源。
         await self._session.flush()
         return user
 
@@ -108,8 +113,8 @@ class UserRepository:
             display_name=principal.display_name,
             email=principal.email,
             phone=principal.phone,
-            email_verified=bool(principal.email_verified),
-            phone_verified=bool(principal.phone_verified),
+            email_verified=False,
+            phone_verified=False,
             avatar_url=principal.avatar_url,
             status="active",
             revision=1,
