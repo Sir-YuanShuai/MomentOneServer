@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.errors import ApplicationError
 from app.infrastructure.database.models.notification import (
     InAppNotification,
+    NotificationJob,
     NotificationPreference,
 )
 from app.infrastructure.database.repositories.notification_repository import (
@@ -103,3 +104,43 @@ class NotificationCenterService:
             item.revision += 1
             await self._repository.save_notification(item)
         return item
+
+
+async def enqueue_security_notification(
+    repository: NotificationCenterRepository,
+    *,
+    user_id: UUID,
+    title: str,
+    body: str,
+    target: str,
+    event_key: str,
+) -> InAppNotification:
+    """在业务事务中创建安全通知及立即投递任务。"""
+    notification = InAppNotification(
+        id=uuid4(),
+        user_id=user_id,
+        category="security",
+        title=title,
+        body=body,
+        target=target,
+        tag=f"security-{event_key}",
+        deduplication_key=f"security:{user_id}:{event_key}",
+        source_type="security",
+        source_id=event_key,
+        revision=1,
+    )
+    await repository.save_notification(notification)
+    await repository.save_job(
+        NotificationJob(
+            id=uuid4(),
+            user_id=user_id,
+            job_type="notification_delivery",
+            source_type="notification",
+            source_id=str(notification.id),
+            source_revision=1,
+            scheduled_at=datetime.now(UTC),
+            status="pending",
+            deduplication_key=f"delivery:{notification.deduplication_key}",
+        )
+    )
+    return notification

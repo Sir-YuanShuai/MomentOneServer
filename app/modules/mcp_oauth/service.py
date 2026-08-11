@@ -21,13 +21,16 @@ import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
+from app.infrastructure.database.repositories.notification_repository import (
+    NotificationCenterRepository,
+)
 from app.infrastructure.database.repositories.user_repository import resolve_user_id
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
 from app.infrastructure.jwt.issuer import JwtIssuer
@@ -37,6 +40,7 @@ from app.modules.mcp_oauth.repositories import (
     McpAuthorizationRepository,
     McpClientRepository,
 )
+from app.modules.notifications.center import enqueue_security_notification
 from app.modules.quotas.repository import QuotaRepository
 
 GRANT_AUTHORIZATION_CODE = "authorization_code"
@@ -398,10 +402,13 @@ class MomentOAuthService:
         await self._codes.mark_consumed(code_id=txn.id)
 
         # 新增 MCP 客户端前检查订阅允许的活跃客户端数量；同一客户端重授权不重复占位。
+        existing_authorization = await self._authorizations.get_by_user_and_client(
+            user_id, txn.client_id
+        )
+        is_new_authorization = (
+            existing_authorization is None or existing_authorization.status != "active"
+        )
         if self._quotas is not None:
-            existing_authorization = await self._authorizations.get_by_user_and_client(
-                user_id, txn.client_id
-            )
             quota_account = await self._quotas.get_or_create_account(user_id, "mcp.clients.active")
             replacing_active = (
                 existing_authorization is not None
@@ -416,12 +423,22 @@ class MomentOAuthService:
 
         # 记录授权关系（Web 端可查看/调整/撤销）
         client = await self._clients.get_by_client_id(txn.client_id)
-        await self._authorizations.upsert(
+        authorization = await self._authorizations.upsert(
             user_id=user_id,
             client_id=txn.client_id,
             client_name=client.client_name if client else None,
             scope=txn.scope or DEFAULT_SCOPE,
         )
+        if is_new_authorization:
+            client_label = client.client_name if client and client.client_name else "MCP 客户端"
+            await enqueue_security_notification(
+                NotificationCenterRepository(self._session),
+                user_id=user_id,
+                title="新增 MCP 授权",
+                body=f"{client_label} 已获得账号访问授权。如非本人操作，请立即撤销并重新认证。",
+                target="/space/settings/?section=mcp-connections",
+                event_key=f"mcp-authorized-{authorization.id}-{uuid4()}",
+            )
 
         # 302 回客户端 redirect_uri
         sep = "&" if "?" in (txn.redirect_uri or "") else "?"

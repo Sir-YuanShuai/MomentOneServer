@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import AuthContext, get_auth_context
 from app.core.config import Settings, get_settings
 from app.core.errors import ApplicationError
+from app.infrastructure.database.repositories.notification_repository import (
+    NotificationCenterRepository,
+)
 from app.infrastructure.database.repositories.user_repository import UserRepository
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.identity.casdoor import CasdoorTokenVerifier
@@ -22,6 +25,7 @@ from app.modules.account_deletion.service import AccountDeletionService
 from app.modules.accounts.providers import login_providers_from_casdoor
 from app.modules.accounts.service import AccountCenterService
 from app.modules.admin.account import AccountRepository
+from app.modules.notifications.center import enqueue_security_notification
 
 router = APIRouter(prefix="/v1/account", tags=["account"])
 
@@ -67,6 +71,43 @@ class IdentityUnlinkConfirmRequest(BaseModel):
 class DeleteAccountConfirmRequest(BaseModel):
     confirmationId: UUID
     confirmationPhrase: str = Field(min_length=1, max_length=32)
+
+
+class LoginNotificationRequest(BaseModel):
+    clientLabel: str = Field(default="新终端", min_length=1, max_length=80)
+
+
+@router.post("/login-notification")
+async def record_login_notification(
+    body: LoginNotificationRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    _require_idempotency(idempotency_key)
+    if auth.method != "casdoor" or auth.issued_at is None:
+        raise ApplicationError(
+            code="INVALID_AUTH_METHOD",
+            message="只有账号登录会话可以登记登录通知。",
+            status_code=400,
+        )
+    repository = NotificationCenterRepository(session)
+    deduplication_key = f"security:{auth.user_id}:login-{auth.issued_at}"
+    existing = await repository.get_by_deduplication_key(deduplication_key)
+    if existing is not None:
+        return {"created": False, "notificationId": str(existing.id)}
+    notification = await enqueue_security_notification(
+        repository,
+        user_id=auth.user_id,
+        title="账号在新会话中登录",
+        body=(
+            f"{body.clientLabel.strip()} 已登录。请检查 MCP 与设备授权；"
+            "如非本人操作，请立即更改密码并重新认证。"
+        ),
+        target="/space/settings/?section=mcp-connections",
+        event_key=f"login-{auth.issued_at}",
+    )
+    return {"created": True, "notificationId": str(notification.id)}
 
 
 def _require_idempotency(value: str | None) -> None:
