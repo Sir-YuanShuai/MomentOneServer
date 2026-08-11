@@ -147,6 +147,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET/POST | `/v1/push/subscriptions` | 已实现（通道第一批） | 通知终端列表与幂等注册，敏感字段加密保存 |
 | DELETE | `/v1/push/subscriptions/{id}` | 已实现（通道第一批） | 撤销单个通知终端 |
 | POST | `/v1/push/test` | 已实现（通道第一批） | 向当前用户指定终端发送测试通知 |
+| POST | `/v1/push/test-all` | 已实现（通道第一批） | 向当前账号全部有效终端发送测试通知并汇总结果 |
 
 ## 已实现的迁移
 

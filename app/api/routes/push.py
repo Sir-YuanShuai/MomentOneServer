@@ -48,6 +48,48 @@ class RegisterPushSubscriptionRequest(BaseModel):
     deviceLabel: str | None = Field(default=None, max_length=120)
 
 
+async def _deliver_test_to_terminal(
+    *,
+    item: PushSubscription,
+    notification_id: UUID,
+    cipher: PushSecretCipher,
+    sender: WebPushSender,
+    repo: PushSubscriptionRepository,
+) -> dict:
+    try:
+        await sender.send_test(
+            subscription=PushSecrets(
+                endpoint=cipher.decrypt(item.endpoint_encrypted),
+                p256dh=cipher.decrypt(item.p256dh_encrypted),
+                auth=cipher.decrypt(item.auth_encrypted),
+            ),
+            notification_id=notification_id,
+        )
+    except ApplicationError as exc:
+        item.failure_count += 1
+        if exc.code == "PUSH_SUBSCRIPTION_EXPIRED":
+            await repo.revoke(item)
+            delivery_status = "expired"
+        else:
+            delivery_status = "failed"
+        return {
+            "subscriptionId": str(item.id),
+            "deviceLabel": item.device_label,
+            "platform": item.platform,
+            "status": delivery_status,
+            "errorCode": exc.code,
+        }
+    item.last_accepted_at = datetime.now(UTC)
+    item.failure_count = 0
+    return {
+        "subscriptionId": str(item.id),
+        "deviceLabel": item.device_label,
+        "platform": item.platform,
+        "status": "accepted",
+        "errorCode": None,
+    }
+
+
 def _repo(session: AsyncSession = Depends(get_db_session)) -> PushSubscriptionRepository:
     return PushSubscriptionRepository(session)
 
@@ -201,9 +243,63 @@ async def send_test_push(
             notification_id=notification_id,
         )
     except ApplicationError as exc:
+        item.failure_count += 1
         if exc.code == "PUSH_SUBSCRIPTION_EXPIRED":
             await repo.revoke(item)
         raise
     item.last_accepted_at = datetime.now(UTC)
     item.failure_count = 0
-    return {"notificationId": str(notification_id), "status": "accepted"}
+    return {
+        "notificationId": str(notification_id),
+        "subscriptionId": str(item.id),
+        "deviceLabel": item.device_label,
+        "platform": item.platform,
+        "status": "accepted",
+        "errorCode": None,
+    }
+
+
+@router.post("/test-all")
+async def send_test_push_to_all_terminals(
+    user_id: UUID = Depends(_get_web_user_id),
+    repo: PushSubscriptionRepository = Depends(_repo),
+    cipher: PushSecretCipher = Depends(_cipher),
+    sender: WebPushSender = Depends(_sender),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    if not idempotency_key:
+        raise ApplicationError(
+            code="IDEMPOTENCY_KEY_REQUIRED", message="缺少幂等键。", status_code=400
+        )
+    subscriptions = [item for item in await repo.list_by_user(user_id) if item.status == "active"]
+    if not subscriptions:
+        raise ApplicationError(
+            code="PUSH_SUBSCRIPTION_NOT_FOUND",
+            message="当前账号还没有可用的通知终端。",
+            status_code=404,
+        )
+    notification_id = uuid4()
+    results = [
+        await _deliver_test_to_terminal(
+            item=item,
+            notification_id=notification_id,
+            cipher=cipher,
+            sender=sender,
+            repo=repo,
+        )
+        for item in subscriptions
+    ]
+    accepted = sum(result["status"] == "accepted" for result in results)
+    expired = sum(result["status"] == "expired" for result in results)
+    failed = len(results) - accepted - expired
+    return {
+        "notificationId": str(notification_id),
+        "status": "accepted" if accepted else "failed",
+        "summary": {
+            "total": len(results),
+            "accepted": accepted,
+            "expired": expired,
+            "failed": failed,
+        },
+        "items": results,
+    }
