@@ -14,7 +14,10 @@ from app.infrastructure.database.repositories.notification_repository import (
     NotificationCenterRepository,
 )
 from app.infrastructure.database.session import init_database
-from app.modules.notifications.center import enqueue_security_notification
+from app.modules.notifications.center import (
+    NotificationCenterService,
+    enqueue_security_notification,
+)
 from app.modules.notifications.worker import NotificationWorker
 from sqlalchemy import select
 
@@ -137,6 +140,12 @@ async def test_security_notification_is_delivered_without_creating_reminder() ->
             stored = await session.get(InAppNotification, notification.id)
             assert job is not None and job.status == "sent"
             assert stored is not None and stored.category == "security"
+
+        async with database.session_factory() as session, session.begin():
+            repository = NotificationCenterRepository(session)
+            updated = await NotificationCenterService(repository).mark_all_read(user_id=user_id)
+            assert updated == 1
+            assert await repository.count_unread(user_id) == 0
     finally:
         async with database.session_factory() as session, session.begin():
             user = await session.get(User, user_id)

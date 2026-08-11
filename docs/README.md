@@ -1,6 +1,6 @@
 # Moment One Server 文档
 
-> 更新日期：2026-08-09
+> 更新日期：2026-08-12
 
 ## 核心设计
 
@@ -9,6 +9,7 @@
 - [外部身份关联与账号合并](./domain/IDENTITY_ACCOUNT_LINKING.md)：多平台登录身份绑定、解绑保护、重复 User 合并和权益去重。
 - [账号永久注销](./domain/ACCOUNT_DELETION.md)：Preview、Casdoor 近期重认证、Confirm 与数据擦除。
 - [管理后台：存储、权益与用量运维](./admin/ENTITLEMENTS_OPERATIONS.md)：动态套餐、存储额度、MCP/API 用量与管理员操作契约。
+- [AI / Agent 通知接入](./NOTIFICATION_INTEGRATION_FOR_AGENTS.md)：Agent 创建提醒的 MCP/REST 接口、幂等要求和通知渠道策略。
 - [PostgreSQL 与 MinIO 存储数据模型](./data/STORAGE_DATA_MODEL.md)：表关系、字段、约束、索引、事务和数据生命周期。
 - [ADR-0001：领域模型与存储边界](./decisions/0001_DOMAIN_AND_STORAGE_BOUNDARIES.md)：关键决策及其取舍。
 - [服务端实施方案](../BACKEND_IMPLEMENTATION_PLAN.md)：总体架构、阶段、API 草案和验收标准。

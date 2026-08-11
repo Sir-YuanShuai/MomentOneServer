@@ -124,6 +124,20 @@ class NotificationCenterRepository:
             or 0
         )
 
+    async def mark_all_read(self, user_id: UUID, *, read_at: datetime) -> int:
+        result = await self._session.execute(
+            update(InAppNotification)
+            .where(
+                InAppNotification.user_id == user_id,
+                InAppNotification.read_at.is_(None),
+            )
+            .values(
+                read_at=read_at,
+                revision=InAppNotification.revision + 1,
+            )
+        )
+        return int(result.rowcount or 0)  # pyright: ignore[reportAttributeAccessIssue]
+
     async def save_notification(self, notification: InAppNotification) -> None:
         self._session.add(notification)
         await self._session.flush()
