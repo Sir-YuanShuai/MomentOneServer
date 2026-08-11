@@ -14,12 +14,16 @@ from app.infrastructure.database.repositories.audit_event_repository import SqlA
 from app.infrastructure.database.repositories.confirmation_repository import (
     SqlConfirmationRepository,
 )
+from app.infrastructure.database.repositories.habit_goal_repository import (
+    SqlHabitGoalRepository,
+)
 from app.infrastructure.database.repositories.moment_repository import PostgresMomentRepository
 from app.infrastructure.database.repositories.moment_revision_repository import (
     SqlMomentRevisionRepository,
 )
 from app.infrastructure.database.session import get_db_session
 from app.modules.data_transfer.bookkeeping_xlsx import export_workbook, file_digest, parse_workbook
+from app.modules.data_transfer.personal_data_xlsx import export_personal_workbook
 from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
     LocationSource,
@@ -31,6 +35,7 @@ from app.modules.moments.domain import (
 )
 
 router = APIRouter(prefix="/v1/data/bookkeeping", tags=["data-transfer"])
+personal_router = APIRouter(prefix="/v1/data", tags=["data-transfer"])
 MAX_FILE_BYTES = 10 * 1024 * 1024
 
 
@@ -257,3 +262,150 @@ async def clear_confirm(
         metadata={"count": deleted},
     )
     return {"deletedCount": deleted}
+
+
+def _xlsx_response(content: bytes, filename: str) -> Response:
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@personal_router.get("/habits/export")
+async def export_habits(
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    moments = await PostgresMomentRepository(session).list_all_by_type(user_id, "habit")
+    goals = await SqlHabitGoalRepository(session).list_by_user(user_id)
+    return _xlsx_response(
+        export_personal_workbook(moments=moments, habit_goals=goals, only="habit"),
+        f"Moment-One-habits-{datetime.now(UTC).date().isoformat()}.xlsx",
+    )
+
+
+@personal_router.get("/export")
+async def export_all_data(
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    moments = await PostgresMomentRepository(session).list_all(user_id)
+    goals = await SqlHabitGoalRepository(session).list_by_user(user_id)
+    return _xlsx_response(
+        export_personal_workbook(moments=moments, habit_goals=goals),
+        f"Moment-One-all-data-{datetime.now(UTC).date().isoformat()}.xlsx",
+    )
+
+
+async def _create_clear_preview(*, user_id: UUID, session: AsyncSession, target: str) -> dict:
+    moments = PostgresMomentRepository(session)
+    goals = SqlHabitGoalRepository(session)
+    if target == "habit":
+        counts = {
+            "habitGoals": await goals.count_by_user(user_id),
+            "habitRecords": await moments.count_by_type(user_id, "habit"),
+        }
+        phrase = "清除全部习惯数据"
+    else:
+        counts = {
+            "moments": await moments.count_all(user_id),
+            "habitGoals": await goals.count_by_user(user_id),
+        }
+        phrase = "清除全部数据"
+    count = sum(counts.values())
+    expires_at = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=5)
+    confirmation = await SqlConfirmationRepository(session).create(
+        user_id=user_id,
+        target_type=f"{target}_data",
+        target_id=uuid4(),
+        action="delete_all",
+        expected_revision=count,
+        preview={"count": count, "counts": counts},
+        expires_at=expires_at,
+    )
+    return {
+        "confirmationId": str(confirmation.id),
+        "expiresAt": expires_at.isoformat(),
+        "count": count,
+        "counts": counts,
+        "confirmationPhrase": phrase,
+    }
+
+
+async def _confirm_clear(
+    *, body: ConfirmRequest, user_id: UUID, session: AsyncSession, target: str
+) -> dict:
+    confirmations = SqlConfirmationRepository(session)
+    confirmation = await confirmations.get(UUID(body.confirmationId))
+    if (
+        confirmation is None
+        or confirmation.user_id != user_id
+        or confirmation.target_type != f"{target}_data"
+        or confirmation.action != "delete_all"
+    ):
+        raise _confirmation_error()
+    if confirmation.status != "pending" or datetime.now(UTC) > confirmation.expires_at:
+        raise _confirmation_error("确认已失效，请重新预览。")
+    moments = PostgresMomentRepository(session)
+    goals = SqlHabitGoalRepository(session)
+    if target == "habit":
+        current = await goals.count_by_user(user_id) + await moments.count_by_type(user_id, "habit")
+    else:
+        current = await moments.count_all(user_id) + await goals.count_by_user(user_id)
+    if current != confirmation.expected_revision:
+        raise ApplicationError(
+            code="REVISION_CONFLICT", message="数据数量已经变化，请重新确认。", status_code=409
+        )
+    if target == "habit":
+        deleted_moments = await moments.soft_delete_all_by_type(user_id, "habit")
+    else:
+        deleted_moments = await moments.soft_delete_all(user_id)
+    deleted_goals = await goals.soft_delete_all(user_id)
+    deleted = deleted_moments + deleted_goals
+    await confirmations.mark_used(confirmation_id=confirmation.id, used_at=datetime.now(UTC))
+    await SqlAuditEventRepository(session).append(
+        user_id=user_id,
+        actor_type="web",
+        actor_id=str(user_id),
+        event_type=f"{target}.data_cleared",
+        resource_type="user_data",
+        resource_id=None,
+        allowed=True,
+        metadata={"count": deleted},
+    )
+    return {"deletedCount": deleted}
+
+
+@personal_router.post("/habits/clear-preview")
+async def habit_clear_preview(
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _create_clear_preview(user_id=user_id, session=session, target="habit")
+
+
+@personal_router.post("/habits/clear-confirm")
+async def habit_clear_confirm(
+    body: ConfirmRequest,
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _confirm_clear(body=body, user_id=user_id, session=session, target="habit")
+
+
+@personal_router.post("/clear-preview")
+async def all_data_clear_preview(
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _create_clear_preview(user_id=user_id, session=session, target="all")
+
+
+@personal_router.post("/clear-confirm")
+async def all_data_clear_confirm(
+    body: ConfirmRequest,
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await _confirm_clear(body=body, user_id=user_id, session=session, target="all")

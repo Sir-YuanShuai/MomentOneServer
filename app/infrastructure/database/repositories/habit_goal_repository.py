@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import HabitGoal as HabitGoalORM
@@ -55,6 +57,22 @@ class SqlHabitGoalRepository:
         )
         result = await self._session.execute(stmt)
         return [_orm_to_domain(orm) for orm in result.scalars().all()]
+
+    async def count_by_user(self, user_id: UUID) -> int:
+        result = await self._session.scalar(
+            select(func.count())
+            .select_from(HabitGoalORM)
+            .where(HabitGoalORM.user_id == user_id, HabitGoalORM.deleted_at.is_(None))
+        )
+        return int(result or 0)
+
+    async def soft_delete_all(self, user_id: UUID) -> int:
+        result = await self._session.execute(
+            update(HabitGoalORM)
+            .where(HabitGoalORM.user_id == user_id, HabitGoalORM.deleted_at.is_(None))
+            .values(deleted_at=datetime.now(UTC), revision=HabitGoalORM.revision + 1)
+        )
+        return int(cast(CursorResult, result).rowcount or 0)
 
     async def create(self, goal: HabitGoal) -> HabitGoal:
         orm = HabitGoalORM(
