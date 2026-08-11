@@ -142,21 +142,20 @@ class CasdoorTokenVerifier:
         )
 
     def ensure_account_scope(self, account: dict[str, object]) -> None:
-        """确保当前 Casdoor 用户属于配置的组织，并由配置的应用创建。"""
+        """确保当前 Casdoor 用户属于配置的组织。
+
+        当前访问应用由已验签 Token 的 audience/client_id 决定；signupApplication
+        仅表示账号最初由哪个 Casdoor 应用创建，不能作为访问边界。
+        """
         organization = (self._settings.casdoor_organization or "").strip()
-        application = (self._settings.casdoor_application or "").strip()
         actual_organization = str(account.get("owner") or "").strip()
-        actual_application = str(account.get("signupApplication") or "").strip()
-        if actual_organization == organization and actual_application == application:
+        if actual_organization == organization:
             return
         raise ApplicationError(
             code="IDENTITY_ORGANIZATION_MISMATCH",
-            message="请使用 Moment One 所属组织和应用的账号重新登录。",
+            message="请使用 Moment One 所属组织账号重新登录。",
             status_code=401,
-            details={
-                "expectedOrganization": organization,
-                "expectedApplication": application,
-            },
+            details={"expectedOrganization": organization},
         )
 
     def _ensure_jwks_client(self) -> PyJWKClient:

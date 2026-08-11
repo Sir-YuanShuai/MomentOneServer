@@ -91,7 +91,7 @@ def test_casdoor_organization_guard_accepts_account_owner() -> None:
     verifier.ensure_organization(principal)
 
 
-def test_casdoor_account_scope_rejects_other_application() -> None:
+def test_casdoor_account_scope_accepts_account_created_by_other_application() -> None:
     verifier = CasdoorTokenVerifier(
         Settings(
             env="test",
@@ -100,10 +100,7 @@ def test_casdoor_account_scope_rejects_other_application() -> None:
         )
     )
 
-    with pytest.raises(ApplicationError) as exc_info:
-        verifier.ensure_account_scope({"owner": "yuanshuai.fun", "signupApplication": "AnotherApp"})
-
-    assert exc_info.value.code == "IDENTITY_ORGANIZATION_MISMATCH"
+    verifier.ensure_account_scope({"owner": "yuanshuai.fun", "signupApplication": "AnotherApp"})
 
 
 @pytest.mark.asyncio
