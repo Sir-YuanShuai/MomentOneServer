@@ -97,3 +97,9 @@ NNNN_description.py
 - 禁止提交 `.env` 文件或包含真实密钥的配置
 - 禁止跳过 `make check` 直接提交
 - 禁止修改 `moment.v1.json` 的已有字段定义（Schema 已冻结，只能新增可选字段）
+
+## AI / Agent 添加通知
+
+AI 不得直接写通知表或调用 Push Provider。定时提醒使用 REST `POST /v1/reminders` 或 MCP
+`reminder_create`；账号安全事件通过通知模块的事务内服务接入。完整规则与示例见
+`docs/NOTIFICATION_INTEGRATION_FOR_AGENTS.md`。

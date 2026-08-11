@@ -20,6 +20,7 @@ from app.infrastructure.database.models.notification import (
 )
 from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.session import get_database
+from app.modules.notifications.policy import delivery_policy, system_push_allowed
 from app.modules.notifications.push import PushSecretCipher, PushSecrets, WebPushSender
 
 logger = structlog.get_logger()
@@ -187,16 +188,12 @@ class NotificationWorker:
                         InAppNotification.user_id == job.user_id,
                     )
                 )
-                if (
-                    notification is None
-                    or notification.revision != job.source_revision
-                    or (preference is not None and not preference.security_enabled)
-                ):
+                if notification is None or notification.revision != job.source_revision:
                     job.status = "skipped"
                     job.locked_at = None
                     job.locked_by = None
                     return
-                push_summary = "账号安全状态有更新"
+                policy = delivery_policy(notification.category)
             else:
                 reminder = await session.scalar(
                     select(Reminder).where(
@@ -234,15 +231,17 @@ class NotificationWorker:
                     )
                     session.add(notification)
                     await session.flush()
-                push_summary = "你有一项待处理提醒"
-            quiet_hours_end = self._quiet_hours_end(preference)
+                policy = delivery_policy(notification.category)
+            quiet_hours_end = (
+                self._quiet_hours_end(preference) if policy.respect_quiet_hours else None
+            )
             if quiet_hours_end is not None:
                 job.status = "retry"
                 job.next_attempt_at = quiet_hours_end
                 job.locked_at = None
                 job.locked_by = None
                 return
-            if preference is not None and not preference.web_push_enabled:
+            if not system_push_allowed(policy, preference):
                 job.status = "sent"
                 job.locked_at = None
                 job.locked_by = None
@@ -289,7 +288,7 @@ class NotificationWorker:
                                 notification.body
                                 if preference is not None
                                 and preference.lock_screen_detail == "full"
-                                else push_summary
+                                else policy.push_summary
                             ),
                             "target": notification.target,
                             "tag": notification.tag,

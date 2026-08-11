@@ -116,3 +116,18 @@ async def mark_notification_read(
         expected_revision=body.expectedRevision,
     )
     return serialize_notification(item)
+
+
+@router.post("/v1/notifications/read-all")
+async def mark_all_notifications_read(
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    if not idempotency_key:
+        raise ApplicationError(
+            code="IDEMPOTENCY_KEY_REQUIRED", message="缺少幂等键。", status_code=400
+        )
+    service = NotificationCenterService(NotificationCenterRepository(session))
+    updated_count = await service.mark_all_read(user_id=ctx.user_id)
+    return {"updatedCount": updated_count, "unreadCount": 0}

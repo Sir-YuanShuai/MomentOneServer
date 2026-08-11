@@ -105,6 +105,9 @@ class NotificationCenterService:
             await self._repository.save_notification(item)
         return item
 
+    async def mark_all_read(self, *, user_id: UUID) -> int:
+        return await self._repository.mark_all_read(user_id, read_at=datetime.now(UTC))
+
 
 async def enqueue_security_notification(
     repository: NotificationCenterRepository,
