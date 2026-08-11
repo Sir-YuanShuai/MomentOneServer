@@ -73,6 +73,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         refresh_token_ttl_seconds=90 * 24 * 3600,
         mcp_base_url="http://testserver",
         casdoor_issuer="https://account.example.fun",  # type: ignore[arg-type]
+        casdoor_audience="mcp-proxy-client",
         casdoor_mcp_client_id="mcp-proxy-client",
         casdoor_mcp_client_secret="proxy-secret",
         casdoor_mcp_redirect_uri=None,  # 显式覆盖 .env，避免回退到真实环境变量

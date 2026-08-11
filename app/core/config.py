@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -106,6 +106,59 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [scope.strip() for scope in value.split(",") if scope.strip()]
         return value
+
+    @model_validator(mode="after")
+    def validate_casdoor_tenant_contract(self) -> "Settings":
+        """Casdoor 启用后，组织、应用与客户端必须形成一份完整租户契约。"""
+        identity_values = (
+            self.casdoor_issuer,
+            self.casdoor_audience,
+            self.casdoor_jwks_url,
+            self.casdoor_mcp_client_id,
+            self.casdoor_management_client_id,
+        )
+        if not any(identity_values):
+            return self
+
+        required = {
+            "casdoor_issuer": self.casdoor_issuer,
+            "casdoor_audience": self.casdoor_audience,
+            "casdoor_jwks_url": self.casdoor_jwks_url,
+            "casdoor_organization": self.casdoor_organization,
+            "casdoor_application": self.casdoor_application,
+            "casdoor_application_id": self.casdoor_application_id,
+        }
+        missing = [name for name, value in required.items() if not str(value or "").strip()]
+        if missing:
+            raise ValueError(
+                f"Casdoor identity tenant configuration is incomplete: {', '.join(missing)}"
+            )
+
+        application = str(self.casdoor_application).strip()
+        application_id = str(self.casdoor_application_id).strip()
+        if application_id.rsplit("/", 1)[-1] != application:
+            raise ValueError("casdoor_application_id must identify casdoor_application")
+
+        audience = str(self.casdoor_audience).strip()
+        for name, value in (
+            ("casdoor_mcp_client_id", self.casdoor_mcp_client_id),
+            ("casdoor_management_client_id", self.casdoor_management_client_id),
+        ):
+            if value and value.strip() != audience:
+                raise ValueError(
+                    f"{name} must equal casdoor_audience for the same Casdoor application"
+                )
+
+        management_pair = (
+            bool(self.casdoor_management_client_id),
+            bool(self.casdoor_management_client_secret),
+        )
+        if management_pair[0] != management_pair[1]:
+            raise ValueError(
+                "casdoor_management_client_id and casdoor_management_client_secret "
+                "must be configured together"
+            )
+        return self
 
 
 @lru_cache
