@@ -191,6 +191,27 @@ async def cancel_reminder(
     return await _transition(reminder_id, body, "cancelled", ctx, session, idempotency_key)
 
 
+@router.post("/{reminder_id}/reopen")
+async def reopen_reminder(
+    reminder_id: UUID,
+    body: ReminderTransitionRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> dict:
+    if not idempotency_key:
+        raise ApplicationError(
+            code="IDEMPOTENCY_KEY_REQUIRED", message="缺少幂等键。", status_code=400
+        )
+    item = await _service(session).reopen(
+        user_id=ctx.user_id,
+        reminder_id=reminder_id,
+        expected_revision=body.expectedRevision,
+        correlation_id=idempotency_key,
+    )
+    return serialize_reminder(item)
+
+
 @router.post("/{reminder_id}/delete-preview")
 async def delete_reminder_preview(
     reminder_id: UUID,

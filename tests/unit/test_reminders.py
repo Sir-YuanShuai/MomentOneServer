@@ -114,3 +114,13 @@ async def test_complete_reminder_checks_revision_and_emits_event() -> None:
     assert completed.status == "completed"
     assert completed.revision == 2
     assert pipeline.events[-1].event_type == "reminder.completed"
+
+    reopened = await service.reopen(
+        user_id=user_id,
+        reminder_id=created.id,
+        expected_revision=2,
+    )
+    assert reopened.status == "pending"
+    assert reopened.completed_at is None
+    assert reopened.revision == 3
+    assert pipeline.events[-1].event_type == "reminder.rescheduled"

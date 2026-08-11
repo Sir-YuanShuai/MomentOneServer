@@ -171,6 +171,30 @@ class ReminderService:
         await self._emit(item, event_type, correlation_id)
         return item
 
+    async def reopen(
+        self,
+        *,
+        user_id: UUID,
+        reminder_id: UUID,
+        expected_revision: int,
+        correlation_id: str | None = None,
+    ) -> Reminder:
+        item = await self.get(user_id=user_id, reminder_id=reminder_id)
+        self.assert_revision(item, expected_revision)
+        if item.status != "completed":
+            raise ApplicationError(
+                code="REMINDER_NOT_COMPLETED",
+                message="只有已完成提醒可以恢复。",
+                status_code=409,
+            )
+        item.status = "pending"
+        item.completed_at = None
+        item.revision += 1
+        item.updated_at = datetime.now(UTC)
+        await self._reminders.save(item)
+        await self._emit(item, "reminder.rescheduled", correlation_id)
+        return item
+
     async def delete(
         self,
         *,
