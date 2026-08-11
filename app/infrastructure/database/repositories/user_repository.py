@@ -131,7 +131,7 @@ async def resolve_user_id(
     if verifier.required_organization:
         userinfo = await verifier.fetch_account(access_token)
         principal = principal.merge_userinfo(userinfo)
-        verifier.ensure_organization(principal)
+        verifier.ensure_account_scope(userinfo)
     user_repo = UserRepository(session)
     issuer = principal.issuer.rstrip("/")
     user = await user_repo.get_by_identity(issuer, principal.subject)
