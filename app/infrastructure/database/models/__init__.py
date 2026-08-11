@@ -26,6 +26,14 @@ from app.infrastructure.database.models.mcp_oauth import (
 )
 from app.infrastructure.database.models.moment import Moment, User
 from app.infrastructure.database.models.moment_revision import MomentRevision
+from app.infrastructure.database.models.notification import (
+    InAppNotification,
+    NotificationDelivery,
+    NotificationJob,
+    NotificationPreference,
+    OutboxEvent,
+    Reminder,
+)
 from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.models.quota import ApiUsageBucket, QuotaAccount, QuotaUsageEvent
 
@@ -47,10 +55,16 @@ __all__ = [
     "Moment",
     "MomentAsset",
     "MomentRevision",
+    "InAppNotification",
+    "NotificationDelivery",
+    "NotificationJob",
+    "NotificationPreference",
+    "OutboxEvent",
     "PendingConfirmation",
     "QuotaAccount",
     "QuotaUsageEvent",
     "PushSubscription",
+    "Reminder",
     "StorageQuotaGrant",
     "User",
     "UserEntitlement",

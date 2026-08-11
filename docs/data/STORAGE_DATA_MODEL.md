@@ -514,6 +514,20 @@ updated_at timestamptz NOT NULL
 endpoint、`p256dh` 和 `auth` 使用独立环境密钥加密保存；`endpoint_hash` 只用于幂等查重和当前终端匹配。
 撤销采用状态变更并停止投递，账号注销时随 User 级联删除可投递凭据。
 
+### 5.10.3 通知调度与投递（迁移 0024）
+
+通知链路使用事务 Outbox，避免业务写入成功但通知任务丢失：
+
+- `reminders`：用户提醒，包含场景、来源、到期时间、时区、状态、revision 和软删除时间；
+- `notification_preferences`：用户级通道、分类、免打扰时段和锁屏详情偏好；
+- `outbox_events`：与业务状态在同一事务写入的领域事件；
+- `notification_jobs`：由 Outbox 生成的可重试定时任务，以 deduplication key 去重；
+- `notifications`：用户级站内通知，一条通知可投递至多个终端；
+- `notification_deliveries`：按通知、通道和目标终端记录每次投递结果。
+
+Worker 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 抢占事件与任务；投递前必须重新检查提醒状态和
+revision。Web Push 默认只显示概括文案，只有用户明确选择完整锁屏详情时才发送提醒标题。
+
 ### 5.11 `devices`
 
 设备注册表。首次扫码绑定时自动注册。

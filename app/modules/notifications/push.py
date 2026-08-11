@@ -96,14 +96,9 @@ class WebPushSender:
         self._settings = settings
 
     async def send_test(self, *, subscription: PushSecrets, notification_id: UUID) -> None:
-        private_key = self._settings.web_push_vapid_private_key
-        subject = self._settings.web_push_vapid_subject
-        if not self._settings.web_push_enabled or not private_key or not subject:
-            raise ApplicationError(
-                code="WEB_PUSH_DISABLED", message="系统通知暂未启用。", status_code=503
-            )
-        payload = json.dumps(
-            {
+        await self.send_payload(
+            subscription=subscription,
+            payload={
                 "version": 1,
                 "notificationId": str(notification_id),
                 "title": "一刻通知已开启",
@@ -111,6 +106,18 @@ class WebPushSender:
                 "target": "/space/settings/?section=notifications",
                 "tag": "moment-one-push-test",
             },
+            ttl=3600,
+        )
+
+    async def send_payload(self, *, subscription: PushSecrets, payload: dict, ttl: int) -> None:
+        private_key = self._settings.web_push_vapid_private_key
+        subject = self._settings.web_push_vapid_subject
+        if not self._settings.web_push_enabled or not private_key or not subject:
+            raise ApplicationError(
+                code="WEB_PUSH_DISABLED", message="系统通知暂未启用。", status_code=503
+            )
+        encoded_payload = json.dumps(
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -121,10 +128,10 @@ class WebPushSender:
                     "endpoint": subscription.endpoint,
                     "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
                 },
-                data=payload,
+                data=encoded_payload,
                 vapid_private_key=private_key,
                 vapid_claims={"sub": subject},
-                ttl=3600,
+                ttl=ttl,
                 timeout=10,
             )
 
@@ -147,7 +154,7 @@ class WebPushSender:
                 ) from exc
             raise ApplicationError(
                 code="PUSH_DELIVERY_FAILED",
-                message="测试通知暂时无法发送，请稍后重试。",
+                message="通知暂时无法发送，请稍后重试。",
                 status_code=502,
                 details={"providerStatus": status, "occurredAt": datetime.now(UTC).isoformat()},
             ) from exc
