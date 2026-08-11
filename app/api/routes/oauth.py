@@ -20,6 +20,9 @@ from app.infrastructure.database.repositories.device_repository import (
     SqlDeviceBindingRepository,
     SqlDeviceRepository,
 )
+from app.infrastructure.database.repositories.notification_repository import (
+    NotificationCenterRepository,
+)
 from app.infrastructure.database.session import get_db_session
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.service import DeviceBindingService
@@ -53,6 +56,7 @@ def _make_service(
         settings=settings,
         authorizations=McpAuthorizationRepository(session),
         quotas=QuotaRepository(session),
+        notifications=NotificationCenterRepository(session),
     )
 
 

@@ -9,11 +9,14 @@
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.core.config import Settings
 from app.core.errors import ApplicationError
 from app.infrastructure.binding_codes.generator import generate_binding_code
+from app.infrastructure.database.repositories.notification_repository import (
+    NotificationCenterRepository,
+)
 from app.infrastructure.jwt.issuer import JwtIssuer
 from app.modules.devices.domain import (
     BindingCode,
@@ -35,6 +38,7 @@ from app.modules.mcp.scope import (
     normalize_scope_names,
 )
 from app.modules.mcp_oauth.repositories import McpAuthorizationRepository
+from app.modules.notifications.center import enqueue_security_notification
 from app.modules.quotas.repository import QuotaRepository
 
 
@@ -58,6 +62,7 @@ class DeviceBindingService:
         settings: Settings,
         authorizations: McpAuthorizationRepository,
         quotas: QuotaRepository | None = None,
+        notifications: NotificationCenterRepository | None = None,
     ) -> None:
         self._bindings = bindings
         self._codes = codes
@@ -67,6 +72,7 @@ class DeviceBindingService:
         # 统一授权记录：眼镜设备即 MCP 客户端的一种（client_type="glasses"）
         self._authorizations = authorizations
         self._quotas = quotas
+        self._notifications = notifications
 
     async def create_binding_session(
         self,
@@ -173,6 +179,18 @@ class DeviceBindingService:
             scope=effective_scope,
             refresh_token_hash=_hash_token("placeholder"),
         )
+        if existing is None and self._notifications is not None:
+            await enqueue_security_notification(
+                self._notifications,
+                user_id=code.user_id,
+                title="新增眼镜设备",
+                body=(
+                    f"{device_name or device_id} 已完成账号授权。"
+                    "如非本人操作，请立即撤销设备并重新认证。"
+                ),
+                target="/space/settings/?section=devices",
+                event_key=f"glasses-bound-{binding.id}-{uuid4()}",
+            )
 
         # 签发 token（scope = 授权记录的有效权限）
         access_token, expires_in = self._jwt_issuer.issue_access_token(

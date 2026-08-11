@@ -106,6 +106,13 @@ class NotificationCenterRepository:
             )
         )
 
+    async def get_by_deduplication_key(self, deduplication_key: str) -> InAppNotification | None:
+        return await self._session.scalar(
+            select(InAppNotification).where(
+                InAppNotification.deduplication_key == deduplication_key
+            )
+        )
+
     async def count_unread(self, user_id: UUID) -> int:
         return int(
             await self._session.scalar(
@@ -119,4 +126,8 @@ class NotificationCenterRepository:
 
     async def save_notification(self, notification: InAppNotification) -> None:
         self._session.add(notification)
+        await self._session.flush()
+
+    async def save_job(self, job: NotificationJob) -> None:
+        self._session.add(job)
         await self._session.flush()

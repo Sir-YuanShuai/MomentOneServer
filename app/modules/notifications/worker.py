@@ -179,27 +179,62 @@ class NotificationWorker:
             job = await session.get(NotificationJob, job_id, with_for_update=True)
             if job is None or job.status != "running":
                 return
-            reminder = await session.scalar(
-                select(Reminder).where(
-                    Reminder.id == UUID(job.source_id), Reminder.user_id == job.user_id
-                )
-            )
-            if (
-                reminder is None
-                or reminder.deleted_at is not None
-                or reminder.status != "pending"
-                or reminder.revision != job.source_revision
-            ):
-                job.status = "skipped"
-                job.locked_at = None
-                job.locked_by = None
-                return
             preference = await session.get(NotificationPreference, job.user_id)
-            if preference is not None and not preference.reminders_enabled:
-                job.status = "skipped"
-                job.locked_at = None
-                job.locked_by = None
-                return
+            if job.job_type == "notification_delivery":
+                notification = await session.scalar(
+                    select(InAppNotification).where(
+                        InAppNotification.id == UUID(job.source_id),
+                        InAppNotification.user_id == job.user_id,
+                    )
+                )
+                if (
+                    notification is None
+                    or notification.revision != job.source_revision
+                    or (preference is not None and not preference.security_enabled)
+                ):
+                    job.status = "skipped"
+                    job.locked_at = None
+                    job.locked_by = None
+                    return
+                push_summary = "账号安全状态有更新"
+            else:
+                reminder = await session.scalar(
+                    select(Reminder).where(
+                        Reminder.id == UUID(job.source_id), Reminder.user_id == job.user_id
+                    )
+                )
+                if (
+                    reminder is None
+                    or reminder.deleted_at is not None
+                    or reminder.status != "pending"
+                    or reminder.revision != job.source_revision
+                    or (preference is not None and not preference.reminders_enabled)
+                ):
+                    job.status = "skipped"
+                    job.locked_at = None
+                    job.locked_by = None
+                    return
+                notification = await session.scalar(
+                    select(InAppNotification).where(
+                        InAppNotification.deduplication_key == job.deduplication_key
+                    )
+                )
+                if notification is None:
+                    notification = InAppNotification(
+                        id=uuid4(),
+                        user_id=job.user_id,
+                        category="reminder",
+                        title="一刻提醒",
+                        body=reminder.title[:160],
+                        target=f"/space/reminders/?reminder={reminder.id}",
+                        tag=f"reminder-{reminder.id}",
+                        deduplication_key=job.deduplication_key,
+                        source_type="reminder",
+                        source_id=str(reminder.id),
+                    )
+                    session.add(notification)
+                    await session.flush()
+                push_summary = "你有一项待处理提醒"
             quiet_hours_end = self._quiet_hours_end(preference)
             if quiet_hours_end is not None:
                 job.status = "retry"
@@ -207,26 +242,6 @@ class NotificationWorker:
                 job.locked_at = None
                 job.locked_by = None
                 return
-            notification = await session.scalar(
-                select(InAppNotification).where(
-                    InAppNotification.deduplication_key == job.deduplication_key
-                )
-            )
-            if notification is None:
-                notification = InAppNotification(
-                    id=uuid4(),
-                    user_id=job.user_id,
-                    category="reminder",
-                    title="一刻提醒",
-                    body=reminder.title[:160],
-                    target=f"/space/reminders/?reminder={reminder.id}",
-                    tag=f"reminder-{reminder.id}",
-                    deduplication_key=job.deduplication_key,
-                    source_type="reminder",
-                    source_id=str(reminder.id),
-                )
-                session.add(notification)
-                await session.flush()
             if preference is not None and not preference.web_push_enabled:
                 job.status = "sent"
                 job.locked_at = None
@@ -274,7 +289,7 @@ class NotificationWorker:
                                 notification.body
                                 if preference is not None
                                 and preference.lock_screen_detail == "full"
-                                else "你有一项待处理提醒"
+                                else push_summary
                             ),
                             "target": notification.target,
                             "tag": notification.tag,
