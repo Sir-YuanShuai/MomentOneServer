@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes.account import router as account_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.assets import router as assets_router
+from app.api.routes.data_transfer import personal_router as personal_data_router
 from app.api.routes.data_transfer import router as data_transfer_router
 from app.api.routes.devices import router as devices_router
 from app.api.routes.habit_goals import router as habit_goals_router
@@ -20,6 +21,7 @@ api_router.include_router(account_router)
 api_router.include_router(admin_router)
 api_router.include_router(moments_router)
 api_router.include_router(data_transfer_router)
+api_router.include_router(personal_data_router)
 api_router.include_router(insights_router)
 api_router.include_router(devices_router)
 api_router.include_router(assets_router)

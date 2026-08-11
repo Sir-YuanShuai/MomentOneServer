@@ -141,4 +141,21 @@ async def revoke_authorization(
                 )
 
 
+@router.delete("/authorizations/{authorization_id}/record", status_code=204)
+async def delete_revoked_authorization_record(
+    authorization_id: UUID,
+    user_id: UUID = Depends(get_authenticated_user_id),
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    deleted = await McpAuthorizationRepository(session).delete_revoked(
+        authorization_id=authorization_id, user_id=user_id
+    )
+    if not deleted:
+        raise ApplicationError(
+            code="REVOKED_AUTHORIZATION_NOT_FOUND",
+            message="只能删除当前账号下已经撤销的授权记录。",
+            status_code=404,
+        )
+
+
 __all__ = ["router"]

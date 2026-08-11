@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import McpAuthorization, McpOAuthClient, McpOAuthCode
@@ -261,6 +262,17 @@ class McpAuthorizationRepository:
         orm.revision = getattr(orm, "revision", 0) + 1
         await self._session.flush()
         return orm
+
+    async def delete_revoked(self, *, authorization_id: UUID, user_id: UUID) -> bool:
+        result = await self._session.execute(
+            delete(McpAuthorization).where(
+                McpAuthorization.id == authorization_id,
+                McpAuthorization.user_id == user_id,
+                McpAuthorization.status == "revoked",
+            )
+        )
+        await self._session.flush()
+        return bool(result.rowcount) if isinstance(result, CursorResult) else False
 
 
 __all__ = [

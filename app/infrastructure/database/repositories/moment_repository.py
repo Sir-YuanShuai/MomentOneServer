@@ -144,6 +144,22 @@ class PostgresMomentRepository:
         )
         return int(result or 0)
 
+    async def count_all(self, user_id: UUID) -> int:
+        result = await self._session.scalar(
+            select(func.count())
+            .select_from(MomentORM)
+            .where(MomentORM.user_id == user_id, MomentORM.deleted_at.is_(None))
+        )
+        return int(result or 0)
+
+    async def list_all(self, user_id: UUID) -> list[Moment]:
+        result = await self._session.execute(
+            select(MomentORM)
+            .where(MomentORM.user_id == user_id, MomentORM.deleted_at.is_(None))
+            .order_by(MomentORM.occurred_at.desc(), MomentORM.id.desc())
+        )
+        return [_orm_to_domain(item) for item in result.scalars().all()]
+
     async def soft_delete_all_by_type(self, user_id: UUID, moment_type: str) -> int:
         result = await self._session.execute(
             update(MomentORM)
@@ -152,6 +168,14 @@ class PostgresMomentRepository:
                 MomentORM.moment_type == moment_type,
                 MomentORM.deleted_at.is_(None),
             )
+            .values(deleted_at=datetime.now(UTC), revision=MomentORM.revision + 1)
+        )
+        return int(cast(CursorResult, result).rowcount or 0)
+
+    async def soft_delete_all(self, user_id: UUID) -> int:
+        result = await self._session.execute(
+            update(MomentORM)
+            .where(MomentORM.user_id == user_id, MomentORM.deleted_at.is_(None))
             .values(deleted_at=datetime.now(UTC), revision=MomentORM.revision + 1)
         )
         return int(cast(CursorResult, result).rowcount or 0)
