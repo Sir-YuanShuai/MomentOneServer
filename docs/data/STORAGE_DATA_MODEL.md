@@ -485,6 +485,35 @@ deleted_at timestamptz                  -- Tombstone，删除后历史打卡记�
 打卡记录通过 `moments.payload.goalId`（JSONB）逻辑引用 `habit_goals.id`，不做物理 FK，
 由应用层在创建/更新打卡时校验归属。
 
+### 5.10.2 `push_subscriptions`（PWA 通知终端）
+
+浏览器或主屏幕 PWA 创建的 Web Push 订阅。它与 Service Worker scope 关联，不等同于眼镜设备绑定；
+同一用户可以有多个有效终端，相同 endpoint 只保留一条记录。
+
+```text
+id uuid PRIMARY KEY
+user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE
+endpoint_hash varchar(64) NOT NULL UNIQUE
+endpoint_encrypted text NOT NULL
+p256dh_encrypted text NOT NULL
+auth_encrypted text NOT NULL
+content_encoding varchar(32) NOT NULL DEFAULT 'aes128gcm'
+expiration_time timestamptz
+user_agent varchar(512)
+platform varchar(32)
+device_label varchar(120)
+status varchar(16) NOT NULL DEFAULT 'active'
+failure_count integer NOT NULL DEFAULT 0
+last_seen_at timestamptz
+last_accepted_at timestamptz
+revoked_at timestamptz
+created_at timestamptz NOT NULL
+updated_at timestamptz NOT NULL
+```
+
+endpoint、`p256dh` 和 `auth` 使用独立环境密钥加密保存；`endpoint_hash` 只用于幂等查重和当前终端匹配。
+撤销采用状态变更并停止投递，账号注销时随 User 级联删除可投递凭据。
+
 ### 5.11 `devices`
 
 设备注册表。首次扫码绑定时自动注册。

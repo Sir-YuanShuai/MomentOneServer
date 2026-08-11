@@ -26,6 +26,7 @@ from app.infrastructure.database.models.mcp_oauth import (
 )
 from app.infrastructure.database.models.moment import Moment, User
 from app.infrastructure.database.models.moment_revision import MomentRevision
+from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.models.quota import ApiUsageBucket, QuotaAccount, QuotaUsageEvent
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "PendingConfirmation",
     "QuotaAccount",
     "QuotaUsageEvent",
+    "PushSubscription",
     "StorageQuotaGrant",
     "User",
     "UserEntitlement",
