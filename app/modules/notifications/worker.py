@@ -274,9 +274,10 @@ class NotificationWorker:
                     channel="web_push",
                     target_id=subscription.id,
                     status="pending",
+                    attempt_count=0,
                 )
                 session.add(delivery)
-                delivery.attempt_count += 1
+                delivery.attempt_count = (delivery.attempt_count or 0) + 1
                 try:
                     await self._sender().send_payload(
                         subscription=self._secrets(subscription),
