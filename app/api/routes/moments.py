@@ -263,6 +263,10 @@ def _to_dict(moment: Moment, media: list[dict] | None = None) -> dict:
 
 
 class CreateMomentRequest(BaseModel):
+    id: UUID | None = Field(
+        default=None,
+        description="客户端离线优先创建时生成的 UUID；省略则由服务端生成。",
+    )
     title: str = Field(max_length=20)
     description: str | None = Field(default=None, max_length=240)
     voiceInput: str | None = None
@@ -397,12 +401,13 @@ async def create_moment(
     idem_repo: SqlIdempotencyRepository | None = None
     if idempotency_key:
         idem_repo = SqlIdempotencyRepository(session)
-        request_fp = fingerprint_payload(body.model_dump())
+        idempotency_payload = body.model_dump(mode="json")
+        request_fp = fingerprint_payload(idempotency_payload)
         idem_record = await idem_repo.acquire(
             user_id=ctx.user_id,
             operation="create_moment",
             idempotency_key=idempotency_key,
-            request_payload=body.model_dump(),
+            request_payload=idempotency_payload,
         )
         # fingerprint 不一致 → 冲突（无论 state）
         if idem_record.request_fingerprint != request_fp:
@@ -424,8 +429,20 @@ async def create_moment(
     # habit 打卡关联的习惯目标归属校验（payload.goalId）
     await _validate_habit_goal_ref(body.payload, ctx.user_id, session)
 
+    if body.id is not None:
+        existing = await PostgresMomentRepository(session).get_by_id_including_deleted(
+            body.id, ctx.user_id
+        )
+        if existing is not None:
+            raise ApplicationError(
+                code="MOMENT_ID_CONFLICT",
+                message="该客户端记录 ID 已存在。",
+                status_code=409,
+                details={"momentId": str(body.id)},
+            )
+
     moment = Moment(
-        id=uuid4(),
+        id=body.id or uuid4(),
         user_id=ctx.user_id,
         title=body.title,
         description=body.description,
@@ -666,8 +683,33 @@ async def update_moment(
     session: AsyncSession = Depends(get_db_session),
     storage: ObjectStorage | None = Depends(get_storage),
     settings: Settings = Depends(get_settings),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> dict:
     user_id = ctx.user_id
+    idem_record = None
+    idem_repo: SqlIdempotencyRepository | None = None
+    if idempotency_key:
+        idem_repo = SqlIdempotencyRepository(session)
+        idempotency_payload = {
+            "momentId": moment_id,
+            "body": body.model_dump(mode="json"),
+        }
+        request_fp = fingerprint_payload(idempotency_payload)
+        idem_record = await idem_repo.acquire(
+            user_id=user_id,
+            operation="update_moment",
+            idempotency_key=idempotency_key,
+            request_payload=idempotency_payload,
+        )
+        if idem_record.request_fingerprint != request_fp:
+            raise ApplicationError(
+                code="IDEMPOTENCY_CONFLICT",
+                message="Idempotency-Key 已用于不同的请求体。",
+                status_code=409,
+            )
+        if idem_record.state == "completed" and idem_record.response_body is not None:
+            return idem_record.response_body
+
     repo = PostgresMomentRepository(session)
     existing = await repo.get_by_id(UUID(moment_id), user_id)
     if existing is None:
@@ -801,6 +843,14 @@ async def update_moment(
         resource_id=moment.id,
         allowed=True,
     )
+
+    if idem_repo is not None and idem_record is not None:
+        await idem_repo.complete(
+            record_id=idem_record.id,
+            response_status=status.HTTP_200_OK,
+            response_body=response,
+            resource_id=moment.id,
+        )
 
     return response
 

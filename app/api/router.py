@@ -16,6 +16,7 @@ from app.api.routes.notifications import router as notifications_router
 from app.api.routes.oauth import router as oauth_router
 from app.api.routes.push import router as push_router
 from app.api.routes.reminders import router as reminders_router
+from app.api.routes.sync import router as sync_router
 from app.api.routes.system import router as system_router
 
 api_router = APIRouter()
@@ -36,3 +37,4 @@ api_router.include_router(mcp_authorizations_router)
 api_router.include_router(push_router)
 api_router.include_router(reminders_router)
 api_router.include_router(notifications_router)
+api_router.include_router(sync_router)

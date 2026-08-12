@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from app.api import deps as deps_module
 from app.api.routes import moments as moments_routes
+from app.api.routes import sync as sync_routes
 from app.application import create_application
 from app.core.config import Settings
 from app.infrastructure.database.repositories.confirmation_repository import (
@@ -93,6 +94,10 @@ class FakeMomentRepository:
         if m is None or m.user_id != user_id or m.deleted_at is not None:
             return None
         return m
+
+    async def get_by_id_including_deleted(self, moment_id: UUID, user_id: UUID) -> Moment | None:
+        m = self._store.get(moment_id)
+        return m if m is not None and m.user_id == user_id else None
 
     async def list_by_user(
         self,
@@ -361,6 +366,45 @@ class FakeAuditRepository:
         self.calls.append({"event_type": event_type, "allowed": allowed})
 
 
+class FakeSyncChangeRepository:
+    def __init__(self) -> None:
+        self._items: list[Any] = []
+
+    async def append(
+        self,
+        *,
+        user_id: UUID,
+        entity_id: UUID,
+        operation: str,
+        revision: int,
+        snapshot: dict,
+    ) -> Any:
+        item = type(
+            "SyncChange",
+            (),
+            {
+                "sequence": len(self._items) + 1,
+                "user_id": user_id,
+                "entity_type": "moment",
+                "entity_id": entity_id,
+                "operation": operation,
+                "revision": revision,
+                "snapshot": snapshot,
+            },
+        )()
+        self._items.append(item)
+        return item
+
+    async def list_after(self, *, user_id: UUID, sequence: int, limit: int) -> list[Any]:
+        return [
+            item for item in self._items if item.user_id == user_id and item.sequence > sequence
+        ][:limit]
+
+    async def latest_sequence(self, *, user_id: UUID) -> int:
+        items = [item.sequence for item in self._items if item.user_id == user_id]
+        return max(items, default=0)
+
+
 class FakeAssetRepository:
     """内存态 Asset Repository。"""
 
@@ -477,6 +521,15 @@ class FakeSession:
     async def flush(self) -> None:
         pass
 
+    def begin_nested(self) -> "FakeSession":
+        return self
+
+    async def __aenter__(self) -> "FakeSession":
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
     async def commit(self) -> None:
         pass
 
@@ -510,6 +563,7 @@ def fake_repos() -> dict[str, Any]:
         "asset": FakeAssetRepository(),
         "moment_asset": FakeMomentAssetRepository(),
         "habit_goal": FakeHabitGoalRepository(),
+        "sync_change": FakeSyncChangeRepository(),
     }
 
 
@@ -540,6 +594,8 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     original_asset_repo = moments_routes.AssetRepository
     original_moment_asset_repo = moments_routes.MomentAssetRepository
     original_habit_goal_repo = moments_routes.SqlHabitGoalRepository
+    original_sync_idem_repo = sync_routes.SqlIdempotencyRepository
+    original_sync_change_repo = sync_routes.SqlSyncChangeRepository
 
     moments_routes.PostgresMomentRepository = lambda session: fake_repos["moment"]  # type: ignore[assignment]
     moments_routes.SqlConfirmationRepository = lambda session: fake_repos["confirmation"]  # type: ignore[assignment]
@@ -549,6 +605,8 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     moments_routes.AssetRepository = lambda session: fake_repos["asset"]  # type: ignore[assignment]
     moments_routes.MomentAssetRepository = lambda session: fake_repos["moment_asset"]  # type: ignore[assignment]
     moments_routes.SqlHabitGoalRepository = lambda session: fake_repos["habit_goal"]  # type: ignore[assignment]
+    sync_routes.SqlIdempotencyRepository = lambda session: fake_repos["idempotency"]  # type: ignore[assignment]
+    sync_routes.SqlSyncChangeRepository = lambda session: fake_repos["sync_change"]  # type: ignore[assignment]
 
     application.dependency_overrides[deps_module.get_auth_context] = _fake_auth_context
     application.dependency_overrides[deps_module.get_authenticated_user_id] = _fake_user_id
@@ -566,6 +624,8 @@ def app(tmp_path: Path, fake_repos: dict[str, Any]) -> Iterator[FastAPI]:
     moments_routes.AssetRepository = original_asset_repo  # type: ignore[assignment]
     moments_routes.MomentAssetRepository = original_moment_asset_repo  # type: ignore[assignment]
     moments_routes.SqlHabitGoalRepository = original_habit_goal_repo  # type: ignore[assignment]
+    sync_routes.SqlIdempotencyRepository = original_sync_idem_repo  # type: ignore[assignment]
+    sync_routes.SqlSyncChangeRepository = original_sync_change_repo  # type: ignore[assignment]
 
 
 @pytest.mark.asyncio
@@ -622,6 +682,134 @@ async def test_create_moment_idempotency_conflict(app: FastAPI, fake_repos: dict
     assert resp1.status_code == 201
     assert resp2.status_code == 409
     assert resp2.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_update_moment_idempotency(app: FastAPI, fake_repos: dict[str, Any]) -> None:
+    transport = ASGITransport(app=app)
+    headers = {"Idempotency-Key": "update-key-001"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/v1/moments", json={"title": "更新幂等测试"})
+        moment_id = created.json()["id"]
+        payload = {"expectedRevision": 1, "title": "只更新一次"}
+        first = await client.patch(f"/v1/moments/{moment_id}", json=payload, headers=headers)
+        replay = await client.patch(f"/v1/moments/{moment_id}", json=payload, headers=headers)
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert first.json()["revision"] == 2
+    assert replay.json()["revision"] == 2
+    assert fake_repos["moment"]._store[UUID(moment_id)].revision == 2
+
+
+@pytest.mark.asyncio
+async def test_update_moment_idempotency_conflict(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    headers = {"Idempotency-Key": "update-key-002"}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/v1/moments", json={"title": "更新冲突测试"})
+        moment_id = created.json()["id"]
+        first = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 1, "title": "版本一"},
+            headers=headers,
+        )
+        conflict = await client.patch(
+            f"/v1/moments/{moment_id}",
+            json={"expectedRevision": 1, "title": "版本二"},
+            headers=headers,
+        )
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_create_moment_accepts_client_generated_id(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    moment_id = uuid4()
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/moments",
+            json={"id": str(moment_id), "title": "离线创建"},
+            headers={"Idempotency-Key": "offline-create-id"},
+        )
+    assert response.status_code == 201
+    assert response.json()["id"] == str(moment_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_operations_replays_and_allows_partial_success(app: FastAPI) -> None:
+    transport = ASGITransport(app=app)
+    created_id = uuid4()
+    missing_id = uuid4()
+    create_operation = {
+        "operationId": str(uuid4()),
+        "kind": "moment.create",
+        "idempotencyKey": "offline-sync-create-1",
+        "entityId": str(created_id),
+        "payload": {
+            "id": str(created_id),
+            "title": "离线记录",
+            "timezone": "Asia/Shanghai",
+        },
+    }
+    conflict_operation = {
+        "operationId": str(uuid4()),
+        "kind": "moment.update",
+        "idempotencyKey": "offline-sync-update-1",
+        "entityId": str(missing_id),
+        "expectedRevision": 1,
+        "payload": {"title": "不会写入"},
+    }
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/sync/operations",
+            json={"operations": [conflict_operation, create_operation]},
+        )
+        replay = await client.post(
+            "/v1/sync/operations",
+            json={"operations": [create_operation]},
+        )
+    assert response.status_code == 200
+    results = {item["operationId"]: item for item in response.json()["results"]}
+    assert results[conflict_operation["operationId"]]["status"] == "rejected"
+    assert results[create_operation["operationId"]]["status"] == "applied"
+    assert results[create_operation["operationId"]]["entity"]["id"] == str(created_id)
+    assert replay.status_code == 200
+    assert replay.json()["results"][0]["entity"]["id"] == str(created_id)
+
+
+@pytest.mark.asyncio
+async def test_sync_changes_uses_server_cursor_and_returns_tombstone(
+    app: FastAPI, fake_repos: dict[str, Any]
+) -> None:
+    moment_id = uuid4()
+    await fake_repos["sync_change"].append(
+        user_id=USER_ID,
+        entity_id=moment_id,
+        operation="upsert",
+        revision=1,
+        snapshot={"id": str(moment_id), "revision": 1, "deletedAt": None},
+    )
+    await fake_repos["sync_change"].append(
+        user_id=USER_ID,
+        entity_id=moment_id,
+        operation="delete",
+        revision=2,
+        snapshot={"id": str(moment_id), "revision": 2, "deletedAt": "2026-08-12T00:00:00Z"},
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        baseline = await client.get("/v1/sync/changes")
+        changes = await client.get("/v1/sync/changes?cursor=1")
+    assert baseline.status_code == 200
+    assert [item["operation"] for item in baseline.json()["changes"]] == ["upsert", "delete"]
+    assert baseline.json()["nextCursor"] == "2"
+    assert changes.status_code == 200
+    body = changes.json()
+    assert body["nextCursor"] == "2"
+    assert body["changes"][0]["operation"] == "delete"
+    assert body["changes"][0]["entity"]["deletedAt"] is not None
 
 
 @pytest.mark.asyncio
