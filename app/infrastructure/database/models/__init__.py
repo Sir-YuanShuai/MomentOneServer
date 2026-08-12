@@ -36,6 +36,7 @@ from app.infrastructure.database.models.notification import (
 )
 from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.models.quota import ApiUsageBucket, QuotaAccount, QuotaUsageEvent
+from app.infrastructure.database.models.sync_change import SyncChange
 
 __all__ = [
     "AccountLinkSession",
@@ -66,6 +67,7 @@ __all__ = [
     "PushSubscription",
     "Reminder",
     "StorageQuotaGrant",
+    "SyncChange",
     "User",
     "UserEntitlement",
     "UserStorageAccount",

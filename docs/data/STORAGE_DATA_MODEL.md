@@ -53,7 +53,6 @@ pending_confirmations
 
 ```text
 sync_cursors
-sync_change_log
 identity_link_sessions
 user_merge_operations
 user_merge_redirects
@@ -75,6 +74,10 @@ search_embeddings
 
 `devices` 和 `device_bindings` 在 Phase 2 引入，因为眼镜端扫码绑定（QR Binding）是 MVP 的核心授权流程。`devices` 记录设备注册信息，`device_bindings` 记录设备与用户的长期绑定关系（可撤销）。详见 `docs/roadmap/MCP_MVP_PLAN.md` §2.5。
 
+`sync_change_log` 已在迁移 0027 落地，作为离线客户端的追加式增量拉取日志；
+`sync_cursors` 暂不建表，客户端以账号分区持久化最后确认的日志序号。服务端日志序号是
+唯一的顺序依据，不能用客户端时间戳代替。
+
 ## 4. 实体关系图
 
 ```mermaid
@@ -90,6 +93,7 @@ erDiagram
     DEVICES ||--o{ DEVICE_BINDINGS : bound_as
 
     MOMENTS ||--o{ MOMENT_REVISIONS : versions
+    USERS ||--o{ SYNC_CHANGE_LOG : receives
     MOMENTS ||--o{ MOMENT_ASSETS : attaches
     ASSETS ||--o{ MOMENT_ASSETS : linked_by
     MOMENTS ||--o{ PENDING_CONFIRMATIONS : targets
@@ -145,6 +149,18 @@ erDiagram
       varchar operation
       jsonb snapshot
       uuid actor_user_id
+      timestamptz created_at
+    }
+
+    SYNC_CHANGE_LOG {
+      bigint sequence PK
+      uuid id UK
+      uuid user_id FK
+      varchar entity_type
+      uuid entity_id
+      varchar operation
+      integer revision
+      jsonb snapshot
       timestamptz created_at
     }
 
@@ -290,6 +306,35 @@ GIN/GIN-trgm (normalized_search_text) -- Phase 2 启用 pg_trgm 后
 ```text
 occurred_at DESC, id DESC
 ```
+
+### 5.4 `sync_change_log`
+
+离线客户端的追加式变更流。每次 Moment 创建、更新或软删除与原业务写入处在同一数据库
+事务内写入一条记录，因此可用来增量拉取实体快照和 Tombstone；它不是审计表的替代品。
+
+| 列 | 推荐类型 | Null | 说明 |
+|---|---|---:|---|
+| `sequence` | `bigint` | 否 | 主键、自增、服务端单调同步游标 |
+| `id` | `uuid` | 否 | 稳定日志行标识，唯一 |
+| `user_id` | `uuid` | 否 | 所有者；查询必须按此隔离 |
+| `entity_type` | `varchar(32)` | 否 | 当前固定为 `moment`，为后续资源预留 |
+| `entity_id` | `uuid` | 否 | Moment ID |
+| `operation` | `varchar(16)` | 否 | `upsert` 或 `delete` |
+| `revision` | `integer` | 否 | 该变化对应的 Moment Revision |
+| `snapshot` | `jsonb` | 否 | 稳定实体快照；delete 时包含 Tombstone `deletedAt` |
+| `created_at` | `timestamptz` | 否 | Server 写入时间，仅用于诊断 |
+
+关键约束与索引：
+
+```text
+PRIMARY KEY (sequence)
+UNIQUE (id)
+FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+INDEX (user_id, sequence)
+```
+
+`sequence` 是唯一用于同步先后判断的字段；`created_at`、客户端时间与 Moment `updated_at`
+不得用于仲裁。`snapshot` 不保存 Access Token、临时下载 URL 或完整审计 metadata。
 
 ### 5.4 `moment_revisions`
 
@@ -859,6 +904,7 @@ users/{user_id}/assets/{asset_id}/thumbnail
 锁定/创建 idempotency record
 -> INSERT moments (revision=1)
 -> INSERT moment_revisions
+-> INSERT sync_change_log（upsert）
 -> INSERT moment_assets（如有，且 Asset 必须 ready）
 -> INSERT audit_events
 -> 完成 idempotency record
@@ -890,6 +936,7 @@ SELECT confirmation FOR UPDATE
 -> 校验 user/status/expiresAt/expectedRevision
 -> UPDATE moments SET deleted_at=?, revision=revision+1
 -> INSERT moment_revisions(operation=deleted)
+-> INSERT sync_change_log（delete Tombstone）
 -> UPDATE pending_confirmations SET status=used
 -> INSERT audit_events
 -> 完成 idempotency record

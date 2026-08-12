@@ -1,12 +1,11 @@
 from datetime import UTC, datetime
-from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import Moment as MomentORM
+from app.infrastructure.database.repositories.sync_change_repository import SqlSyncChangeRepository
 from app.modules.moments.domain import (
     LocationSource,
     Moment,
@@ -63,6 +62,50 @@ def _orm_to_domain(orm: MomentORM) -> Moment:
     )
 
 
+def _sync_snapshot(moment: Moment) -> dict:
+    """稳定的同步实体表示；不包含媒体临时 URL。"""
+    return {
+        "id": str(moment.id),
+        "userId": str(moment.user_id),
+        "title": moment.title,
+        "description": moment.description,
+        "voiceInput": moment.voice_input,
+        "aiSummary": moment.ai_summary,
+        "category": moment.category.value,
+        "type": moment.moment_type,
+        "payload": moment.payload,
+        "tags": list(moment.tags),
+        "persons": list(moment.persons),
+        "event": moment.event,
+        "occurredAt": moment.occurred_at.isoformat(),
+        "timezone": moment.timezone,
+        "location": (
+            {
+                "name": moment.location.name,
+                "latitude": moment.location.latitude,
+                "longitude": moment.location.longitude,
+                "source": moment.location.source.value,
+            }
+            if moment.location
+            else None
+        ),
+        "emotion": (
+            {
+                "label": moment.emotion.label,
+                "valence": moment.emotion.valence,
+                "arousal": moment.emotion.arousal,
+            }
+            if moment.emotion
+            else None
+        ),
+        "provenance": moment.provenance.to_dict() if moment.provenance else None,
+        "revision": moment.revision,
+        "createdAt": moment.created_at.isoformat(),
+        "updatedAt": moment.updated_at.isoformat(),
+        "deletedAt": moment.deleted_at.isoformat() if moment.deleted_at else None,
+    }
+
+
 class PostgresMomentRepository:
     """PostgreSQL-backed Moment repository."""
 
@@ -96,7 +139,15 @@ class PostgresMomentRepository:
         )
         self._session.add(orm)
         await self._session.flush()
-        return _orm_to_domain(orm)
+        created = _orm_to_domain(orm)
+        await SqlSyncChangeRepository(self._session).append(
+            user_id=created.user_id,
+            entity_id=created.id,
+            operation="upsert",
+            revision=created.revision,
+            snapshot=_sync_snapshot(created),
+        )
+        return created
 
     async def list_all_by_type(self, user_id: UUID, moment_type: str) -> list[Moment]:
         result = await self._session.execute(
@@ -162,23 +213,28 @@ class PostgresMomentRepository:
 
     async def soft_delete_all_by_type(self, user_id: UUID, moment_type: str) -> int:
         result = await self._session.execute(
-            update(MomentORM)
-            .where(
+            select(MomentORM.id).where(
                 MomentORM.user_id == user_id,
                 MomentORM.moment_type == moment_type,
                 MomentORM.deleted_at.is_(None),
             )
-            .values(deleted_at=datetime.now(UTC), revision=MomentORM.revision + 1)
         )
-        return int(cast(CursorResult, result).rowcount or 0)
+        ids = list(result.scalars().all())
+        for moment_id in ids:
+            await self.soft_delete(moment_id, user_id)
+        return len(ids)
 
     async def soft_delete_all(self, user_id: UUID) -> int:
         result = await self._session.execute(
-            update(MomentORM)
-            .where(MomentORM.user_id == user_id, MomentORM.deleted_at.is_(None))
-            .values(deleted_at=datetime.now(UTC), revision=MomentORM.revision + 1)
+            select(MomentORM.id).where(
+                MomentORM.user_id == user_id,
+                MomentORM.deleted_at.is_(None),
+            )
         )
-        return int(cast(CursorResult, result).rowcount or 0)
+        ids = list(result.scalars().all())
+        for moment_id in ids:
+            await self.soft_delete(moment_id, user_id)
+        return len(ids)
 
     async def list_by_user(
         self,
@@ -303,6 +359,14 @@ class PostgresMomentRepository:
         orm = result.scalar_one_or_none()
         return _orm_to_domain(orm) if orm else None
 
+    async def get_by_id_including_deleted(self, moment_id: UUID, user_id: UUID) -> Moment | None:
+        """按 ID 查询，保留 Tombstone 用于离线客户端 UUID 防重。"""
+        result = await self._session.execute(
+            select(MomentORM).where(and_(MomentORM.id == moment_id, MomentORM.user_id == user_id))
+        )
+        orm = result.scalar_one_or_none()
+        return _orm_to_domain(orm) if orm else None
+
     async def update(self, moment_id: UUID, user_id: UUID, **fields) -> Moment | None:
         stmt = select(MomentORM).where(
             and_(
@@ -364,7 +428,15 @@ class PostgresMomentRepository:
         orm.revision += 1
         await self._session.flush()
         await self._session.refresh(orm)
-        return _orm_to_domain(orm)
+        updated = _orm_to_domain(orm)
+        await SqlSyncChangeRepository(self._session).append(
+            user_id=updated.user_id,
+            entity_id=updated.id,
+            operation="upsert",
+            revision=updated.revision,
+            snapshot=_sync_snapshot(updated),
+        )
+        return updated
 
     async def soft_delete(self, moment_id: UUID, user_id: UUID) -> Moment | None:
         stmt = select(MomentORM).where(
@@ -382,4 +454,12 @@ class PostgresMomentRepository:
         orm.revision = orm.revision + 1
         await self._session.flush()
         await self._session.refresh(orm)
-        return _orm_to_domain(orm)
+        deleted = _orm_to_domain(orm)
+        await SqlSyncChangeRepository(self._session).append(
+            user_id=deleted.user_id,
+            entity_id=deleted.id,
+            operation="delete",
+            revision=deleted.revision,
+            snapshot=_sync_snapshot(deleted),
+        )
+        return deleted
