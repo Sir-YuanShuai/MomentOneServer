@@ -5,7 +5,7 @@ from app.infrastructure.database.models.notification import (
     NotificationDelivery,
     NotificationPreference,
 )
-from app.modules.notifications.policy import delivery_policy, system_push_allowed
+from app.modules.notifications.policy import delivery_policy, in_app_allowed, system_push_allowed
 
 
 def test_security_push_bypasses_quiet_hours() -> None:
@@ -23,17 +23,33 @@ def test_reminder_and_habit_push_respect_quiet_hours() -> None:
 def test_category_and_global_preferences_both_control_system_push() -> None:
     preference = NotificationPreference(
         web_push_enabled=True,
-        reminders_enabled=False,
+        reminder_channel="in_app",
         quiet_hours_enabled=True,
         quiet_hours_start=time(23, 0),
         quiet_hours_end=time(7, 0),
     )
 
     assert system_push_allowed(delivery_policy("reminder"), preference) is False
-    preference.reminders_enabled = True
+    preference.reminder_channel = "system"
     assert system_push_allowed(delivery_policy("reminder"), preference) is True
     preference.web_push_enabled = False
     assert system_push_allowed(delivery_policy("reminder"), preference) is False
+
+
+def test_channel_controls_in_app_creation() -> None:
+    preference = NotificationPreference(reminder_channel="off")
+
+    assert in_app_allowed(delivery_policy("reminder"), preference) is False
+    preference.reminder_channel = "in_app"
+    assert in_app_allowed(delivery_policy("reminder"), preference) is True
+    preference.reminder_channel = "system"
+    assert in_app_allowed(delivery_policy("reminder"), preference) is True
+
+
+def test_default_channels_are_quiet_until_user_enables_system_notifications() -> None:
+    assert system_push_allowed(delivery_policy("reminder"), None) is False
+    assert in_app_allowed(delivery_policy("reminder"), None) is True
+    assert in_app_allowed(delivery_policy("announcement"), None) is False
 
 
 def test_new_delivery_attempt_count_is_initialized_before_flush() -> None:

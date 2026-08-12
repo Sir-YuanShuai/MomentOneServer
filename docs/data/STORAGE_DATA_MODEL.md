@@ -519,7 +519,9 @@ endpoint、`p256dh` 和 `auth` 使用独立环境密钥加密保存；`endpoint_
 通知链路使用事务 Outbox，避免业务写入成功但通知任务丢失：
 
 - `reminders`：用户提醒；历史列 `due_at` 保存提醒触发时间，`deadline_at` 保存可选业务截止时间，另含场景、来源、时区、状态、revision 和软删除时间；
-- `notification_preferences`：用户级通道、分类、免打扰时段和锁屏详情偏好；
+- `notification_preferences`：用户级通知偏好。每个分类通过 `*_channel` 使用
+  `off | in_app | system` 三档配置；`system` 同时创建站内通知并尝试 Web Push，
+  `in_app` 只创建站内通知，`off` 不创建通知。免打扰时段和锁屏详情只作用于系统通知；
 - `outbox_events`：与业务状态在同一事务写入的领域事件；
 - `notification_jobs`：由 Outbox 生成的可重试定时任务，以 deduplication key 去重；
 - `notifications`：用户级站内通知，一条通知可投递至多个终端；

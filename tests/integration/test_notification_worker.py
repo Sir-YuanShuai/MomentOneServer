@@ -129,6 +129,7 @@ async def test_security_notification_is_delivered_without_creating_reminder() ->
                 target="/space/settings/?section=mcp-connections",
                 event_key=f"test-{uuid4()}",
             )
+            assert notification is not None
 
         events, jobs = await NotificationWorker(settings).run_once()
         assert events == 0

@@ -11,6 +11,7 @@ from app.infrastructure.database.models.notification import (
 from app.infrastructure.database.repositories.notification_repository import (
     NotificationCenterRepository,
 )
+from app.modules.notifications.policy import delivery_policy, in_app_allowed
 
 
 def serialize_preferences(item: NotificationPreference | None, user_id: UUID) -> dict:
@@ -21,6 +22,10 @@ def serialize_preferences(item: NotificationPreference | None, user_id: UUID) ->
         "habitEnabled": item.habit_enabled if item else True,
         "securityEnabled": item.security_enabled if item else True,
         "announcementsEnabled": item.announcements_enabled if item else True,
+        "reminderChannel": item.reminder_channel if item else "in_app",
+        "habitChannel": item.habit_channel if item else "in_app",
+        "securityChannel": item.security_channel if item else "in_app",
+        "announcementChannel": item.announcement_channel if item else "off",
         "quietHoursEnabled": item.quiet_hours_enabled if item else False,
         "quietHoursStart": item.quiet_hours_start.isoformat()
         if item and item.quiet_hours_start
@@ -117,8 +122,11 @@ async def enqueue_security_notification(
     body: str,
     target: str,
     event_key: str,
-) -> InAppNotification:
+) -> InAppNotification | None:
     """在业务事务中创建安全通知及立即投递任务。"""
+    preference = await repository.get_preferences(user_id)
+    if not in_app_allowed(delivery_policy("security"), preference):
+        return None
     notification = InAppNotification(
         id=uuid4(),
         user_id=user_id,

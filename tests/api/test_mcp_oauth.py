@@ -340,6 +340,10 @@ class _FakeScalars:
 
 
 class FakeSession:
+    async def get(self, model: object, key: object) -> None:
+        del model, key
+        return None
+
     async def commit(self) -> None:
         pass
 
