@@ -1593,25 +1593,30 @@ async def reminder_create(
     title: str,
     note: str | None,
     scene: str,
-    due_at: str,
+    remind_at: str,
+    deadline_at: str | None,
     timezone_name: str,
     idempotency_key: str,
 ) -> CallToolResult:
     """创建由 Server 调度的提醒；MCP 与 Web 共用同一通知管线。"""
     ctx.require_scope("moments.write")
     try:
-        parsed_due_at = datetime.fromisoformat(due_at.replace("Z", "+00:00"))
+        parsed_remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
+        parsed_deadline_at = (
+            datetime.fromisoformat(deadline_at.replace("Z", "+00:00")) if deadline_at else None
+        )
     except ValueError as exc:
         raise ApplicationError(
             code="INVALID_ARGUMENTS",
-            message="dueAt 必须是带时区的 ISO-8601 时间。",
+            message="remindAt 和 dueAt 必须是带时区的 ISO-8601 时间。",
             status_code=400,
         ) from exc
     request_body = {
         "title": title,
         "note": note,
         "scene": scene,
-        "dueAt": due_at,
+        "remindAt": remind_at,
+        "dueAt": deadline_at,
         "timezone": timezone_name,
     }
     idempotency = SqlIdempotencyRepository(ctx.session)
@@ -1637,7 +1642,8 @@ async def reminder_create(
         title=title,
         body=note,
         scene=scene,
-        due_at=parsed_due_at,
+        due_at=parsed_remind_at,
+        deadline_at=parsed_deadline_at,
         timezone=timezone_name,
         source_type="mcp",
         correlation_id=ctx.request_id or idempotency_key,
