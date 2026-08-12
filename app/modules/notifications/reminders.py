@@ -18,7 +18,8 @@ def serialize_reminder(item: Reminder) -> dict:
         "scene": item.scene,
         "sourceType": item.source_type,
         "sourceId": item.source_id,
-        "dueAt": item.due_at.isoformat(),
+        "remindAt": item.due_at.isoformat(),
+        "dueAt": item.deadline_at.isoformat() if item.deadline_at else None,
         "timezone": item.timezone,
         "status": item.status,
         "revision": item.revision,
@@ -58,6 +59,7 @@ class ReminderService:
         body: str | None,
         scene: str,
         due_at: datetime,
+        deadline_at: datetime | None = None,
         timezone: str,
         source_type: str = "manual",
         source_id: str | None = None,
@@ -70,6 +72,12 @@ class ReminderService:
                 message="提醒时间必须是带时区的未来时间。",
                 status_code=400,
             )
+        if deadline_at is not None and (deadline_at.tzinfo is None or deadline_at < due_at):
+            raise ApplicationError(
+                code="REMINDER_DEADLINE_INVALID",
+                message="截止时间必须带时区，且不能早于提醒时间。",
+                status_code=400,
+            )
         item = Reminder(
             id=uuid4(),
             user_id=user_id,
@@ -79,6 +87,7 @@ class ReminderService:
             source_type=source_type,
             source_id=source_id,
             due_at=due_at,
+            deadline_at=deadline_at,
             timezone=self.validate_timezone(timezone),
             status="pending",
             revision=1,
@@ -107,6 +116,7 @@ class ReminderService:
         body: str | None = None,
         scene: str | None = None,
         due_at: datetime | None = None,
+        deadline_at: datetime | None = None,
         timezone: str | None = None,
         correlation_id: str | None = None,
     ) -> Reminder:
@@ -126,6 +136,15 @@ class ReminderService:
                     status_code=400,
                 )
             item.due_at = due_at
+        if deadline_at is not None:
+            effective_remind_at = due_at or item.due_at
+            if deadline_at.tzinfo is None or deadline_at < effective_remind_at:
+                raise ApplicationError(
+                    code="REMINDER_DEADLINE_INVALID",
+                    message="截止时间必须带时区，且不能早于提醒时间。",
+                    status_code=400,
+                )
+            item.deadline_at = deadline_at
         if title is not None:
             item.title = title.strip()
         if body is not None:
@@ -134,6 +153,34 @@ class ReminderService:
             item.scene = scene
         if timezone is not None:
             item.timezone = self.validate_timezone(timezone)
+        item.revision += 1
+        item.updated_at = datetime.now(UTC)
+        await self._reminders.save(item)
+        await self._emit(item, "reminder.rescheduled", correlation_id)
+        return item
+
+    async def snooze(
+        self,
+        *,
+        user_id: UUID,
+        reminder_id: UUID,
+        expected_revision: int,
+        remind_at: datetime,
+        correlation_id: str | None = None,
+    ) -> Reminder:
+        item = await self.get(user_id=user_id, reminder_id=reminder_id)
+        self.assert_revision(item, expected_revision)
+        if item.status != "pending":
+            raise ApplicationError(
+                code="REMINDER_NOT_PENDING", message="该提醒已经处理。", status_code=409
+            )
+        if remind_at.tzinfo is None or remind_at <= datetime.now(UTC):
+            raise ApplicationError(
+                code="REMINDER_DUE_AT_INVALID",
+                message="稍后提醒时间必须是带时区的未来时间。",
+                status_code=400,
+            )
+        item.due_at = remind_at
         item.revision += 1
         item.updated_at = datetime.now(UTC)
         await self._reminders.save(item)
@@ -228,7 +275,7 @@ class ReminderService:
                 aggregate_id=str(item.id),
                 user_id=item.user_id,
                 aggregate_revision=item.revision,
-                payload={"dueAt": item.due_at.isoformat(), "status": item.status},
+                payload={"remindAt": item.due_at.isoformat(), "status": item.status},
                 correlation_id=correlation_id,
                 occurred_at=datetime.now(UTC),
                 available_at=datetime.now(UTC),

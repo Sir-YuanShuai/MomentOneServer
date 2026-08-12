@@ -68,7 +68,7 @@ async def test_reminder_outbox_becomes_notification_job_and_in_app_notice() -> N
                     user_id=user_id,
                     aggregate_revision=1,
                     payload={
-                        "dueAt": (now - timedelta(seconds=1)).isoformat(),
+                        "remindAt": (now - timedelta(seconds=1)).isoformat(),
                         "status": "pending",
                     },
                     occurred_at=now,
@@ -90,7 +90,8 @@ async def test_reminder_outbox_becomes_notification_job_and_in_app_notice() -> N
             )
             assert event is not None and event.processed_at is not None
             assert job is not None and job.status == "sent"
-            assert notification is not None and notification.body == "测试提醒"
+            assert notification is not None and notification.title == "测试提醒"
+            assert notification.body == "现在该处理这项提醒了。"
     finally:
         async with database.session_factory() as session, session.begin():
             user = await session.get(User, user_id)

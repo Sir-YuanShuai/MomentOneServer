@@ -18,7 +18,8 @@ AI 不直接创建 `notifications` 记录，也不直接调用 Web Push。AI 创
 ```json
 {
   "title": "提交报销单",
-  "dueAt": "2026-08-13T09:00:00+08:00",
+  "remindAt": "2026-08-13T09:00:00+08:00",
+  "dueAt": "2026-08-13T18:00:00+08:00",
   "timezone": "Asia/Shanghai",
   "note": "整理发票后提交",
   "scene": "general",
@@ -27,7 +28,7 @@ AI 不直接创建 `notifications` 记录，也不直接调用 Web Push。AI 创
 }
 ```
 
-`dueAt` 必须是带时区的未来时间。日期、时间或时区不明确时必须先询问用户；相同业务意图重试时
+`remindAt` 是必须带时区的未来提醒时间；`dueAt` 是可选截止时间，不能早于提醒时间。日期、时间或时区不明确时必须先询问用户；相同业务意图重试时
 复用同一个 `idempotencyKey`。
 
 ## REST 客户端创建提醒
@@ -44,7 +45,8 @@ Content-Type: application/json
   "title": "提交报销单",
   "note": "整理发票后提交",
   "scene": "general",
-  "dueAt": "2026-08-13T09:00:00+08:00",
+  "remindAt": "2026-08-13T09:00:00+08:00",
+  "dueAt": "2026-08-13T18:00:00+08:00",
   "timezone": "Asia/Shanghai"
 }
 ```
@@ -55,11 +57,13 @@ Content-Type: application/json
 PATCH /v1/reminders/{reminderId}
 POST  /v1/reminders/{reminderId}/complete
 POST  /v1/reminders/{reminderId}/cancel
+POST  /v1/reminders/{reminderId}/snooze
 POST  /v1/reminders/{reminderId}/delete-preview
 POST  /v1/reminders/delete-confirm
 ```
 
-修改必须携带 `expectedRevision`；删除必须走 Preview + Confirm。
+修改、稍后提醒和状态变更必须携带 `expectedRevision`；删除必须走 Preview + Confirm。稍后提醒只更新
+`remindAt`，不会改动业务截止时间 `dueAt`。
 
 ## 服务端业务代码
 

@@ -3,6 +3,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from app.api.routes.reminders import ReminderCreateRequest, ReminderUpdateRequest
 from app.core.errors import ApplicationError
 from app.infrastructure.database.models.notification import OutboxEvent, Reminder
 from app.infrastructure.database.repositories.notification_repository import (
@@ -44,6 +45,20 @@ def make_service() -> tuple[ReminderService, FakeReminderRepository, FakePipelin
     return service, reminders, pipeline
 
 
+def test_legacy_due_at_request_is_treated_as_reminder_time() -> None:
+    value = datetime.now(UTC) + timedelta(hours=1)
+
+    created = ReminderCreateRequest.model_validate(
+        {"title": "旧客户端", "dueAt": value.isoformat(), "timezone": "UTC"}
+    )
+    updated = ReminderUpdateRequest.model_validate(
+        {"expectedRevision": 1, "dueAt": value.isoformat()}
+    )
+
+    assert created.remindAt == value and created.dueAt is None
+    assert updated.remindAt == value and updated.dueAt is None
+
+
 @pytest.mark.asyncio
 async def test_create_reminder_emits_minimal_outbox_event() -> None:
     service, reminders, pipeline = make_service()
@@ -56,15 +71,20 @@ async def test_create_reminder_emits_minimal_outbox_event() -> None:
         body="月底前处理",
         scene="general",
         due_at=due_at,
+        deadline_at=due_at + timedelta(hours=2),
         timezone="Asia/Shanghai",
         correlation_id="request-1",
     )
 
     assert reminders.items[created.id] is created
     assert created.status == "pending"
+    assert created.deadline_at == due_at + timedelta(hours=2)
     assert pipeline.events[0].event_type == "reminder.created"
     assert pipeline.events[0].aggregate_id == str(created.id)
-    assert pipeline.events[0].payload == {"dueAt": due_at.isoformat(), "status": "pending"}
+    assert pipeline.events[0].payload == {
+        "remindAt": due_at.isoformat(),
+        "status": "pending",
+    }
 
 
 @pytest.mark.asyncio
@@ -81,6 +101,54 @@ async def test_create_reminder_rejects_past_time() -> None:
         )
     assert caught.value.code == "REMINDER_DUE_AT_INVALID"
     assert pipeline.events == []
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_deadline_before_reminder_time() -> None:
+    service, _, pipeline = make_service()
+    remind_at = datetime.now(UTC) + timedelta(hours=2)
+    with pytest.raises(ApplicationError) as caught:
+        await service.create(
+            user_id=uuid4(),
+            title="截止时间错误",
+            body=None,
+            scene="general",
+            due_at=remind_at,
+            deadline_at=remind_at - timedelta(minutes=1),
+            timezone="UTC",
+        )
+    assert caught.value.code == "REMINDER_DEADLINE_INVALID"
+    assert pipeline.events == []
+
+
+@pytest.mark.asyncio
+async def test_snooze_reschedules_without_changing_deadline() -> None:
+    service, _, pipeline = make_service()
+    user_id = uuid4()
+    original_remind_at = datetime.now(UTC) + timedelta(hours=1)
+    deadline_at = original_remind_at + timedelta(days=1)
+    created = await service.create(
+        user_id=user_id,
+        title="交水费",
+        body=None,
+        scene="general",
+        due_at=original_remind_at,
+        deadline_at=deadline_at,
+        timezone="UTC",
+    )
+    snoozed_at = original_remind_at + timedelta(hours=2)
+
+    snoozed = await service.snooze(
+        user_id=user_id,
+        reminder_id=created.id,
+        expected_revision=1,
+        remind_at=snoozed_at,
+    )
+
+    assert snoozed.due_at == snoozed_at
+    assert snoozed.deadline_at == deadline_at
+    assert snoozed.revision == 2
+    assert pipeline.events[-1].event_type == "reminder.rescheduled"
 
 
 @pytest.mark.asyncio

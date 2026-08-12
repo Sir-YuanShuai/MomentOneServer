@@ -113,7 +113,7 @@ class NotificationWorker:
         )
         if event.event_type not in {"reminder.created", "reminder.rescheduled"}:
             return
-        due_at_raw = event.payload.get("dueAt")
+        due_at_raw = event.payload.get("remindAt") or event.payload.get("dueAt")
         if not isinstance(due_at_raw, str):
             return
         due_at = datetime.fromisoformat(due_at_raw.replace("Z", "+00:00"))
@@ -221,8 +221,8 @@ class NotificationWorker:
                         id=uuid4(),
                         user_id=job.user_id,
                         category="reminder",
-                        title="一刻提醒",
-                        body=reminder.title[:160],
+                        title=reminder.title[:160],
+                        body=(reminder.body or "现在该处理这项提醒了。")[:500],
                         target=f"/space/reminders/?reminder={reminder.id}",
                         tag=f"reminder-{reminder.id}",
                         deduplication_key=job.deduplication_key,

@@ -84,7 +84,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
     "habit_progress": "返回习惯目标在最近若干天的完成情况、今日状态与连续天数。",
     "reminder_create": (
-        "创建由 Moment One Server 调度的提醒。需要 moments.write、未来的带时区 dueAt "
+        "创建由 Moment One Server 调度的提醒。需要 moments.write、未来的带时区 remindAt "
         "以及 idempotencyKey；即使前端未打开，到期后也会按账号通知设置投递。"
     ),
     "agent_plan": (
@@ -759,13 +759,14 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
     )
     async def reminder_create(  # pyright: ignore[reportUnusedFunction]
         title: Annotated[str, Field(min_length=1, max_length=160)],
-        dueAt: Annotated[str, Field(description="带时区的 ISO-8601 未来时间")],
+        remindAt: Annotated[str, Field(description="带时区的 ISO-8601 未来提醒时间")],
         timezone: Annotated[str, Field(description="IANA 时区，如 Asia/Shanghai")],
         idempotencyKey: Annotated[str, Field(min_length=8, max_length=160)],
         note: Annotated[str | None, Field(default=None, max_length=2000)] = None,
         scene: Annotated[
             Literal["general", "bookkeeping", "habit"], Field(default="general")
         ] = "general",
+        dueAt: Annotated[str | None, Field(default=None, description="可选截止时间")] = None,
     ) -> object:
         return await env.call(
             lambda ctx: tools.reminder_create(
@@ -773,7 +774,8 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
                 title=title,
                 note=note,
                 scene=scene,
-                due_at=dueAt,
+                remind_at=remindAt,
+                deadline_at=dueAt,
                 timezone_name=timezone,
                 idempotency_key=idempotencyKey,
             ),

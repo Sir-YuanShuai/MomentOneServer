@@ -151,6 +151,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET/POST | `/v1/reminders` | 已实现（通知第二批） | 提醒列表与幂等创建 |
 | GET/PATCH | `/v1/reminders/{id}` | 已实现（通知第二批） | 提醒详情与 revision 乐观锁更新 |
 | POST | `/v1/reminders/{id}/complete`、`cancel` | 已实现（通知第二批） | 完成或取消提醒并写入 Outbox |
+| POST | `/v1/reminders/{id}/snooze` | 已实现（通知第六批） | 只调整下一次提醒时间，不修改可选截止时间 |
 | POST | `/v1/reminders/{id}/delete-preview`、`/v1/reminders/delete-confirm` | 已实现（通知第二批） | 提醒两阶段软删除 |
 | GET/PATCH | `/v1/notification-preferences` | 已实现（通知第三批） | 服务端通知分类、免打扰、时区与锁屏详情偏好 |
 | GET | `/v1/notifications` | 已实现（通知第三批） | 站内通知列表与未读总数 |
