@@ -20,7 +20,7 @@ from app.infrastructure.database.models.notification import (
 )
 from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.session import get_database
-from app.modules.notifications.policy import delivery_policy, system_push_allowed
+from app.modules.notifications.policy import delivery_policy, in_app_allowed, system_push_allowed
 from app.modules.notifications.push import PushSecretCipher, PushSecrets, WebPushSender
 
 logger = structlog.get_logger()
@@ -205,7 +205,6 @@ class NotificationWorker:
                     or reminder.deleted_at is not None
                     or reminder.status != "pending"
                     or reminder.revision != job.source_revision
-                    or (preference is not None and not preference.reminders_enabled)
                 ):
                     job.status = "skipped"
                     job.locked_at = None
@@ -216,6 +215,12 @@ class NotificationWorker:
                         InAppNotification.deduplication_key == job.deduplication_key
                     )
                 )
+                policy = delivery_policy("reminder")
+                if not in_app_allowed(policy, preference):
+                    job.status = "skipped"
+                    job.locked_at = None
+                    job.locked_by = None
+                    return
                 if notification is None:
                     notification = InAppNotification(
                         id=uuid4(),

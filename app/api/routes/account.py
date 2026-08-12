@@ -107,6 +107,8 @@ async def record_login_notification(
         target="/space/settings/?section=mcp-connections",
         event_key=f"login-{auth.issued_at}",
     )
+    if notification is None:
+        return {"created": False, "notificationId": None}
     return {"created": True, "notificationId": str(notification.id)}
 
 

@@ -27,6 +27,10 @@ class NotificationPreferenceUpdateRequest(BaseModel):
     habitEnabled: bool | None = None
     securityEnabled: bool | None = None
     announcementsEnabled: bool | None = None
+    reminderChannel: str | None = Field(default=None, pattern="^(off|in_app|system)$")
+    habitChannel: str | None = Field(default=None, pattern="^(off|in_app|system)$")
+    securityChannel: str | None = Field(default=None, pattern="^(off|in_app|system)$")
+    announcementChannel: str | None = Field(default=None, pattern="^(off|in_app|system)$")
     quietHoursEnabled: bool | None = None
     quietHoursStart: time | None = None
     quietHoursEnd: time | None = None
@@ -44,6 +48,10 @@ PREFERENCE_FIELDS = {
     "habitEnabled": "habit_enabled",
     "securityEnabled": "security_enabled",
     "announcementsEnabled": "announcements_enabled",
+    "reminderChannel": "reminder_channel",
+    "habitChannel": "habit_channel",
+    "securityChannel": "security_channel",
+    "announcementChannel": "announcement_channel",
     "quietHoursEnabled": "quiet_hours_enabled",
     "quietHoursStart": "quiet_hours_start",
     "quietHoursEnd": "quiet_hours_end",
