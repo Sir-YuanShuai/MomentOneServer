@@ -15,6 +15,28 @@ AI 不直接创建 `notifications` 记录，也不直接调用 Web Push。AI 创
 
 使用 MCP 工具 `reminder_create`，需要 `moments.write` Scope：
 
+推荐让 Server 做确定性换算，不要由模型手算 UTC offset。时间输入三选一：
+
+- `afterMinutes`：用户说“30 分钟后提醒我”；以 Server 接收工具调用的时刻为基准；
+- `localDateTime` + `timezone`：用户说“明天上午 9 点”且日期、IANA 时区已经明确；
+- `remindAt`：上游已经持有可靠的带 offset RFC3339 绝对时间。
+
+例如用户在上海明确要求 2026-08-14 上午 9 点提醒：
+
+```json
+{
+  "title": "提交报销单",
+  "localDateTime": "2026-08-14T09:00:00",
+  "timezone": "Asia/Shanghai",
+  "dueAt": "2026-08-14T18:00:00+08:00",
+  "note": "整理发票后提交",
+  "scene": "general",
+  "idempotencyKey": "agent-run-id:reminder:expense"
+}
+```
+
+旧客户端仍可直接传绝对时间：
+
 ```json
 {
   "title": "提交报销单",
@@ -28,8 +50,21 @@ AI 不直接创建 `notifications` 记录，也不直接调用 Web Push。AI 创
 }
 ```
 
-`remindAt` 是必须带时区的未来提醒时间；`dueAt` 是可选截止时间，不能早于提醒时间。日期、时间或时区不明确时必须先询问用户；相同业务意图重试时
-复用同一个 `idempotencyKey`。
+三个时间输入必须且只能提供一个。`remindAt` 必须带 offset；`localDateTime` 不带
+offset，由 `timezone` 的 IANA 规则换算；`timezone` 省略时使用账号时区。夏令时空档或
+重叠时间会被 Server 拒绝，Agent 必须请用户换一个明确时间。`dueAt` 是可选截止时间，
+不能早于提醒时间。日期、时间或时区不明确时必须先询问用户；相同业务意图重试时复用
+同一个 `idempotencyKey`。
+
+## 三类时间的字段所有权
+
+| 时间 | 字段 | 写入方 | 规则 |
+|---|---|---|---|
+| 提醒触发时间 | `remindAt` | Server 归一化 | Agent 提交三选一输入，Server 返回最终绝对时刻 |
+| 记录创建时间 | `createdAt` | 仅 Server | 记录首次进入云端的时间，Agent 不得提交或覆盖 |
+| 事件发生时间 | `occurredAt` | 用户语义 + Server 归一化 | 未提时间时取 Server 接收时刻；补录使用 `occurredLocalDateTime + timezone`；绝对时间必须带 offset |
+
+`dueAt` 是事项截止时间，不是 `createdAt`，也不是默认提醒时间；新 MCP 客户端不得混用。
 
 ## REST 客户端创建提醒
 

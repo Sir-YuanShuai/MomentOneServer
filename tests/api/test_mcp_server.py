@@ -559,10 +559,20 @@ async def test_mcp_list_tools_with_qr_binding_token(
         "habit_progress",
         "agent_plan",
         "a2ui_action",
+        "reminder_create",
     } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
     assert "moments.write" in create.get("description", "")
+    assert set(create["inputSchema"]["required"]) == {"amount", "flow"}
+    assert {"occurredAt", "occurredLocalDateTime", "timezone"} <= set(
+        create["inputSchema"]["properties"]
+    )
+    reminder = next(t for t in tools if t["name"] == "reminder_create")
+    assert set(reminder["inputSchema"]["required"]) == {"title", "idempotencyKey"}
+    assert {"remindAt", "localDateTime", "afterMinutes", "timezone", "dueAt"} <= set(
+        reminder["inputSchema"]["properties"]
+    )
     list_tool = next(t for t in tools if t["name"] == "bookkeeping_list")
     assert (
         list_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == "ui://moment-one/bookkeeping"

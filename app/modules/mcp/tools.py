@@ -85,6 +85,7 @@ class McpCallContext:
     actor_id: str | None
     request_id: str
     session: AsyncSession
+    account_timezone: str | None = None
     a2ui: A2UISupport = A2UI_DISABLED
     available_tools: frozenset[str] | None = None
 
@@ -162,17 +163,115 @@ def _bookkeeping_payload_from_args(
     return payload
 
 
-def _parse_occurred_at(value: str | None) -> datetime:
-    if not value:
-        return datetime.now(UTC)
+def resolve_occurred_time(
+    value: str | None,
+    local_date_time: str | None,
+    timezone_name: str,
+    reference_time: datetime | None = None,
+) -> tuple[datetime, str]:
+    if value is not None and local_date_time is not None:
+        raise ApplicationError(
+            code="OCCURRED_TIME_INPUT_INVALID",
+            message="occurredAt 与 occurredLocalDateTime 只能提供一个。",
+            status_code=400,
+        )
+    if local_date_time is not None:
+        return _local_datetime(local_date_time, timezone_name, "occurredLocalDateTime"), "local"
+    if value is None:
+        return reference_time or datetime.now(UTC), "server"
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        resolved = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if resolved.tzinfo is None:
+            raise ValueError("occurredAt must include an offset")
+        return resolved, "absolute"
     except ValueError as exc:
         raise ApplicationError(
             code="INVALID_ARGUMENTS",
-            message="occurredAt 不是合法的 ISO-8601 时间。",
+            message="occurredAt 必须是带时区 offset 的 RFC3339 时间。",
             status_code=400,
             details={"occurredAt": value},
+        ) from exc
+
+
+async def _resolve_timezone(ctx: McpCallContext, value: str | None) -> str:
+    """Use an explicit IANA zone, then the account preference, finally UTC."""
+    resolved = value or ctx.account_timezone or "UTC"
+    _parse_timezone(resolved)
+    return resolved
+
+
+def _local_datetime(value: str, timezone_name: str, field: str) -> datetime:
+    """Resolve a wall-clock value and reject DST gaps/overlaps instead of guessing."""
+    try:
+        local = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message=f"{field} 必须是 YYYY-MM-DDTHH:MM[:SS] 本地时间。",
+            status_code=400,
+            details={field: value},
+        ) from exc
+    if local.tzinfo is not None:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message=f"{field} 不应包含 UTC offset；请通过 timezone 指定 IANA 时区。",
+            status_code=400,
+        )
+    zone = _parse_timezone(timezone_name)
+    first = local.replace(tzinfo=zone, fold=0)
+    second = local.replace(tzinfo=zone, fold=1)
+    first_back = first.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
+    second_back = second.astimezone(UTC).astimezone(zone).replace(tzinfo=None)
+    valid_first = first_back == local
+    valid_second = second_back == local
+    if not valid_first and not valid_second:
+        raise ApplicationError(
+            code="LOCAL_TIME_NONEXISTENT",
+            message="该本地时间处于夏令时跳变空档，请选择其他时间。",
+            status_code=400,
+            details={field: value, "timezone": timezone_name},
+        )
+    if valid_first and valid_second and first.utcoffset() != second.utcoffset():
+        raise ApplicationError(
+            code="LOCAL_TIME_AMBIGUOUS",
+            message="该本地时间因夏令时切换出现两次，请改用带 offset 的 remindAt。",
+            status_code=400,
+            details={field: value, "timezone": timezone_name},
+        )
+    return first if valid_first else second
+
+
+def resolve_reminder_time(
+    *,
+    remind_at: str | None,
+    local_date_time: str | None,
+    after_minutes: int | None,
+    timezone_name: str,
+    reference_time: datetime | None = None,
+) -> tuple[datetime, str]:
+    supplied = sum(value is not None for value in (remind_at, local_date_time, after_minutes))
+    if supplied != 1:
+        raise ApplicationError(
+            code="REMINDER_TIME_INPUT_INVALID",
+            message="remindAt、localDateTime、afterMinutes 必须且只能提供一个。",
+            status_code=400,
+        )
+    try:
+        if remind_at is not None:
+            resolved = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
+            if resolved.tzinfo is None:
+                raise ValueError("remindAt must include an offset")
+            return resolved, "absolute"
+        if local_date_time is not None:
+            return _local_datetime(local_date_time, timezone_name, "localDateTime"), "local"
+        return (reference_time or datetime.now(UTC)) + timedelta(
+            minutes=after_minutes or 0
+        ), "relative"
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="remindAt 必须是带时区 offset 的 RFC3339 时间。",
+            status_code=400,
         ) from exc
 
 
@@ -310,6 +409,8 @@ async def bookkeeping_create(
     amount: float,
     flow: str,
     occurred_at: str | None,
+    occurred_local_date_time: str | None,
+    timezone_name: str | None,
     account: str | None,
     category: str | None,
     merchant: str | None,
@@ -340,7 +441,10 @@ async def bookkeeping_create(
     if not resolved_title:
         resolved_title = "记账"
 
-    occurred = _parse_occurred_at(occurred_at)
+    resolved_timezone = await _resolve_timezone(ctx, timezone_name)
+    occurred, occurred_source = resolve_occurred_time(
+        occurred_at, occurred_local_date_time, resolved_timezone
+    )
 
     # 幂等：传 idempotencyKey 时启用（与 REST 一致）
     idem_repo: SqlIdempotencyRepository | None = None
@@ -354,6 +458,8 @@ async def bookkeeping_create(
                 "amount": amount,
                 "flow": flow,
                 "occurredAt": occurred_at,
+                "occurredLocalDateTime": occurred_local_date_time,
+                "timezone": resolved_timezone,
                 "account": account,
                 "category": category,
                 "merchant": merchant,
@@ -396,7 +502,7 @@ async def bookkeeping_create(
         persons=(),
         event=None,
         occurred_at=occurred,
-        timezone="UTC",
+        timezone=resolved_timezone,
         revision=1,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -422,6 +528,7 @@ async def bookkeeping_create(
         "category": payload.get("category"),
         "ledger": payload.get("ledger"),
         "occurredAt": created.occurred_at.isoformat(),
+        "occurredTimeSource": occurred_source,
         "revision": created.revision,
         "created": True,
         "replayed": False,
@@ -928,7 +1035,8 @@ async def _create_typed_moment(
     persons: list[str] | None,
     event: str | None,
     occurred_at: str | None,
-    timezone_name: str,
+    occurred_local_date_time: str | None,
+    timezone_name: str | None,
     moment_type: str,
     payload: dict | None,
     idempotency_key: str,
@@ -974,10 +1082,10 @@ async def _create_typed_moment(
             message="event 不能超过 50 个字符。",
             status_code=400,
         )
-    _parse_timezone(timezone_name)
+    timezone_name = await _resolve_timezone(ctx, timezone_name)
     resolved_payload = payload or {}
     validate_moment_type(moment_type, resolved_payload)
-    occurred = _parse_occurred_at(occurred_at)
+    occurred, _ = resolve_occurred_time(occurred_at, occurred_local_date_time, timezone_name)
 
     request_body = {
         "title": resolved_title,
@@ -987,6 +1095,7 @@ async def _create_typed_moment(
         "persons": persons or [],
         "event": event,
         "occurredAt": occurred_at,
+        "occurredLocalDateTime": occurred_local_date_time,
         "timezone": timezone_name,
         "type": moment_type,
         "payload": resolved_payload,
@@ -1068,7 +1177,8 @@ async def moments_create(
     persons: list[str] | None,
     event: str | None,
     occurred_at: str | None,
-    timezone_name: str,
+    occurred_local_date_time: str | None,
+    timezone_name: str | None,
     moment_type: str,
     payload: dict | None,
     idempotency_key: str,
@@ -1083,6 +1193,7 @@ async def moments_create(
         persons=persons,
         event=event,
         occurred_at=occurred_at,
+        occurred_local_date_time=occurred_local_date_time,
         timezone_name=timezone_name,
         moment_type=moment_type,
         payload=payload,
@@ -1469,6 +1580,7 @@ async def habit_checkin_create(
         persons=None,
         event=None,
         occurred_at=occurred_at,
+        occurred_local_date_time=None,
         timezone_name=timezone_name,
         moment_type="habit",
         payload=payload,
@@ -1600,18 +1712,28 @@ async def reminder_create(
     title: str,
     note: str | None,
     scene: str,
-    remind_at: str,
+    remind_at: str | None,
+    local_date_time: str | None,
+    after_minutes: int | None,
     deadline_at: str | None,
-    timezone_name: str,
+    timezone_name: str | None,
     idempotency_key: str,
 ) -> CallToolResult:
     """创建由 Server 调度的提醒；MCP 与 Web 共用同一通知管线。"""
     ctx.require_scope("moments.write")
+    timezone_name = await _resolve_timezone(ctx, timezone_name)
+    parsed_remind_at, time_source = resolve_reminder_time(
+        remind_at=remind_at,
+        local_date_time=local_date_time,
+        after_minutes=after_minutes,
+        timezone_name=timezone_name,
+    )
     try:
-        parsed_remind_at = datetime.fromisoformat(remind_at.replace("Z", "+00:00"))
         parsed_deadline_at = (
             datetime.fromisoformat(deadline_at.replace("Z", "+00:00")) if deadline_at else None
         )
+        if parsed_deadline_at is not None and parsed_deadline_at.tzinfo is None:
+            raise ValueError("dueAt must include an offset")
     except ValueError as exc:
         raise ApplicationError(
             code="INVALID_ARGUMENTS",
@@ -1623,6 +1745,8 @@ async def reminder_create(
         "note": note,
         "scene": scene,
         "remindAt": remind_at,
+        "localDateTime": local_date_time,
+        "afterMinutes": after_minutes,
         "dueAt": deadline_at,
         "timezone": timezone_name,
     }
@@ -1655,7 +1779,14 @@ async def reminder_create(
         source_type="mcp",
         correlation_id=ctx.request_id or idempotency_key,
     )
-    response = {"reminder": serialize_reminder(reminder)}
+    response = {
+        "reminder": serialize_reminder(reminder),
+        "resolvedTime": {
+            "remindAt": reminder.due_at.isoformat(),
+            "timezone": reminder.timezone,
+            "source": time_source,
+        },
+    }
     await idempotency.complete(
         record_id=record.id,
         response_status=201,
