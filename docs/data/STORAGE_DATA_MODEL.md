@@ -520,6 +520,8 @@ name       varchar(30) NOT NULL         -- 习惯名称（≤30 字）
 unit       varchar(20)                  -- 计量单位（次 / 分钟 / 公里…）
 frequency  varchar(16)                  -- 打卡频率（daily=每天 / weekly=每周 N 次），仅展示不驱动校验
 times_per_week integer                 -- frequency=weekly 时的每周目标次数
+target_period varchar(16) NOT NULL DEFAULT 'daily' -- 统计周期：daily / weekly / monthly
+target_count integer NOT NULL DEFAULT 1 -- 每个统计周期至少完成次数
 color      varchar(16)                  -- 习惯标识色（日历/卡片区分）
 revision   integer NOT NULL DEFAULT 1   -- 乐观锁
 created_at timestamptz NOT NULL
@@ -529,6 +531,25 @@ deleted_at timestamptz                  -- Tombstone，删除后历史打卡记�
 
 打卡记录通过 `moments.payload.goalId`（JSONB）逻辑引用 `habit_goals.id`，不做物理 FK，
 由应用层在创建/更新打卡时校验归属。
+
+`frequency/times_per_week` 为兼容旧客户端保留；新客户端以 `target_period/target_count`
+为准。迁移时 daily 映射为 daily/1，weekly 映射为 weekly/times_per_week。
+
+### 5.10.1.1 `user_feedback`
+
+MCP Agent 代用户提交的问题、建议和功能诉求。
+
+```text
+id uuid PRIMARY KEY
+user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE
+kind varchar(24) NOT NULL               -- bug / feature_request / usability / question / other
+summary varchar(160) NOT NULL
+details text
+context jsonb NOT NULL DEFAULT '{}'
+source varchar(24) NOT NULL DEFAULT 'mcp'
+status varchar(24) NOT NULL DEFAULT 'new'
+created_at timestamptz NOT NULL
+```
 
 ### 5.10.2 `push_subscriptions`（PWA 通知终端）
 
