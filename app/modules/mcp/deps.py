@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
 from app.infrastructure.database.repositories.user_repository import UserRepository
+from app.infrastructure.storage.object_storage import ObjectStorage
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport
 from app.modules.mcp.scope import has_scope
 from app.modules.mcp.tools import McpCallContext, err_result
@@ -30,9 +31,15 @@ class McpToolEnv:
         *,
         session_factory: SessionFactory | None = None,
         enforce_quotas: bool = True,
+        object_storage: ObjectStorage | None = None,
+        max_upload_bytes: int = 20 * 1024 * 1024,
+        upload_url_ttl_seconds: int = 600,
     ) -> None:
         self._session_factory: SessionFactory = session_factory or _default_session_factory
         self._enforce_quotas = enforce_quotas
+        self._object_storage = object_storage
+        self._max_upload_bytes = max_upload_bytes
+        self._upload_url_ttl_seconds = upload_url_ttl_seconds
 
     def session(self) -> AbstractAsyncContextManager[AsyncSession]:
         return self._session_factory()
@@ -111,6 +118,9 @@ class McpToolEnv:
                 account_timezone=account.timezone if account else None,
                 # A2UI 是眼镜渲染通道；普通 MCP / MCP Apps 始终使用 HTML App。
                 a2ui=a2ui_support if method == "glasses" else A2UI_DISABLED,
+                object_storage=self._object_storage,
+                max_upload_bytes=self._max_upload_bytes,
+                upload_url_ttl_seconds=self._upload_url_ttl_seconds,
             )
             try:
                 if policy is not None:

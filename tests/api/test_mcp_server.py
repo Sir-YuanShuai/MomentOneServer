@@ -562,6 +562,8 @@ async def test_mcp_list_tools_with_qr_binding_token(
         "a2ui_action",
         "reminder_create",
         "feedback_submit",
+        "asset_upload_intent_create",
+        "asset_upload_complete",
     } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
@@ -570,6 +572,18 @@ async def test_mcp_list_tools_with_qr_binding_token(
     assert {"occurredAt", "occurredLocalDateTime", "timezone"} <= set(
         create["inputSchema"]["properties"]
     )
+    assert "assetIds" in create["inputSchema"]["properties"]
+    for record_tool_name in ("moments_create", "habit_checkin_create"):
+        record_tool = next(t for t in tools if t["name"] == record_tool_name)
+        assert "assetIds" in record_tool["inputSchema"]["properties"]
+    upload_intent = next(t for t in tools if t["name"] == "asset_upload_intent_create")
+    assert set(upload_intent["inputSchema"]["required"]) == {
+        "contentType",
+        "sizeBytes",
+        "idempotencyKey",
+    }
+    upload_complete = next(t for t in tools if t["name"] == "asset_upload_complete")
+    assert set(upload_complete["inputSchema"]["required"]) == {"assetId", "idempotencyKey"}
     reminder = next(t for t in tools if t["name"] == "reminder_create")
     assert set(reminder["inputSchema"]["required"]) == {"title", "idempotencyKey"}
     assert {"remindAt", "localDateTime", "afterMinutes", "timezone", "dueAt"} <= set(

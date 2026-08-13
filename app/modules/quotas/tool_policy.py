@@ -30,4 +30,8 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
     "a2ui_action": ToolPolicy("moments.read"),
     "account_entitlements": ToolPolicy("moments.read", entitlement=None, metered=False),
     "feedback_submit": ToolPolicy("moments.write", entitlement=None, write=True, metered=False),
+    "asset_upload_intent_create": ToolPolicy(
+        "moments.write", entitlement="media.upload", write=True
+    ),
+    "asset_upload_complete": ToolPolicy("moments.write", entitlement="media.upload", write=True),
 }

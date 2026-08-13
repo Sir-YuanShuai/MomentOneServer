@@ -51,6 +51,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "amount 金额、flow 流向（expense/income）为必填；occurredAt 省略时由 Server 记录接收时刻，"
         "补录过去账目时传带 offset 的 ISO-8601；timezone 省略时使用账号时区。"
         "category 分类（如餐饮、交通）、merchant 商家、ledger 账本、account 账户可选。"
+        "可通过 assetIds 引用已 ready 且属于当前用户的附件。"
         "支持 idempotencyKey 幂等重试。非法 payload 返回 INVALID_ARGUMENTS。"
     ),
     "bookkeeping_list": (
@@ -65,7 +66,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "记账意图解析（眼镜端预路由）：输入用户原话，返回 action=summary/create/list 与"
         "对应参数（含相对周期 year/month 换算）。眼镜端先调本工具再执行对应工具。"
     ),
-    "moments_create": "创建一条通用或类型化 Moment。需要 moments.write；idempotencyKey 必填。",
+    "moments_create": (
+        "创建一条通用或类型化 Moment。可引用已 ready 且属于当前用户的 assetIds；"
+        "需要 moments.write 和 idempotencyKey。"
+    ),
     "moments_list": "按发生时间倒序浏览 Moment 时间线，支持类型、分类、标签和时间范围过滤。",
     "moments_search": "在标题、正文、摘要、标签、人物、事件和类型 payload 中搜索 Moment。",
     "moments_count": "统计指定时间范围内的 Moment 数量，并按分类和记录类型分组。",
@@ -74,7 +78,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "habit_goals_list": "列出当前用户的习惯目标。",
     "habit_goal_create": "创建一个每日或每周习惯目标，需要 moments.write。",
     "habit_goal_update": "修改习惯名称、单位或每日/每周/每月目标；必须传 expectedRevision。",
-    "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
+    "habit_checkin_create": (
+        "为习惯目标写入打卡 Moment，可引用已 ready 的 assetIds；"
+        "需要 moments.write 和 idempotencyKey。"
+    ),
     "habit_progress": (
         "返回指定习惯（goalId）或全部习惯在最近若干天的完成情况、今日状态与连续天数。"
     ),
@@ -92,6 +99,14 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "account_entitlements": "查看当前账号套餐、存储和 MCP/Planner/AI 等额度，不消耗商业调用额度。",
     "feedback_submit": (
         "提交用户对 Moment One 的问题、体验反馈或功能建议。仅在用户明确表达反馈意愿时调用。"
+    ),
+    "asset_upload_intent_create": (
+        "为用户明确提供的本地附件创建短期直传意图。传 MIME 和精确字节数，返回预签名 PUT URL；"
+        "不要传 Base64，也不要让 Server 代抓任意公网 URL。需要 moments.write 和 media.upload。"
+    ),
+    "asset_upload_complete": (
+        "客户端 PUT 完成后确认附件，Server 校验对象大小、类型和所有权并返回 ready assetId。"
+        "只有 ready assetId 才能传给记录类工具。"
     ),
 }
 
@@ -203,6 +218,7 @@ def build_mcp_server(
     _register_account_entitlements(server, env)
     _register_reminder_create(server, env)
     _register_feedback_submit(server, env)
+    _register_asset_tools(server, env)
     _register_bookkeeping_prompt(server)
     server.middleware.append(McpToolVisibilityMiddleware(env))
 
@@ -319,6 +335,10 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
             str | None,
             Field(default=None, max_length=20, description="标题（可选，默认取分类/商家）"),
         ] = None,
+        assetIds: Annotated[
+            list[str] | None,
+            Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
+        ] = None,
     ) -> object:
         return await _call_with_a2ui(
             env,
@@ -339,6 +359,7 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
                 count_in_budget=countInBudget,
                 idempotency_key=idempotencyKey,
                 title=title,
+                asset_ids=assetIds,
             ),
             tool_name="bookkeeping_create",
             idempotency_key=idempotencyKey,
@@ -593,6 +614,10 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         ] = None,
         type: Annotated[str, Field(default="general")] = "general",
         payload: Annotated[dict | None, Field(default=None)] = None,
+        assetIds: Annotated[
+            list[str] | None,
+            Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
+        ] = None,
     ) -> object:
         return await env.call(
             lambda ctx: tools.moments_create(
@@ -609,6 +634,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 moment_type=type,
                 payload=payload,
                 idempotency_key=idempotencyKey,
+                asset_ids=assetIds,
             ),
             tool_name="moments_create",
             idempotency_key=idempotencyKey,
@@ -752,6 +778,10 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         occurredAt: Annotated[str | None, Field(default=None)] = None,
         timezone: Annotated[str, Field(default="UTC")] = "UTC",
         note: Annotated[str | None, Field(default=None, max_length=240)] = None,
+        assetIds: Annotated[
+            list[str] | None,
+            Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
+        ] = None,
     ) -> object:
         return await _call_with_a2ui(
             env,
@@ -765,6 +795,7 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 timezone_name=timezone,
                 note=note,
                 idempotency_key=idempotencyKey,
+                asset_ids=assetIds,
             ),
             tool_name="habit_checkin_create",
             idempotency_key=idempotencyKey,
@@ -924,6 +955,49 @@ def _register_feedback_submit(server: MCPServer, env: McpToolEnv) -> None:
                 ctx, kind=kind, summary=summary, details=details, context=context
             ),
             tool_name="feedback_submit",
+        )
+
+
+def _register_asset_tools(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="asset_upload_intent_create",
+        description=_TOOL_DESCRIPTIONS["asset_upload_intent_create"],
+        title="准备上传附件",
+    )
+    async def asset_upload_intent_create(  # pyright: ignore[reportUnusedFunction]
+        contentType: Annotated[str, Field(min_length=3, max_length=120)],
+        sizeBytes: Annotated[int, Field(gt=0)],
+        idempotencyKey: Annotated[str, Field(min_length=8, max_length=128)],
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.asset_upload_intent_create(
+                ctx,
+                content_type=contentType,
+                size_bytes=sizeBytes,
+                idempotency_key=idempotencyKey,
+            ),
+            tool_name="asset_upload_intent_create",
+            idempotency_key=idempotencyKey,
+        )
+
+    @server.tool(
+        name="asset_upload_complete",
+        description=_TOOL_DESCRIPTIONS["asset_upload_complete"],
+        title="确认附件上传",
+    )
+    async def asset_upload_complete(  # pyright: ignore[reportUnusedFunction]
+        assetId: Annotated[str, Field(description="上传意图返回的 Asset UUID")],
+        idempotencyKey: Annotated[str, Field(min_length=8, max_length=128)],
+        checksumSha256: Annotated[
+            str | None, Field(default=None, min_length=64, max_length=64)
+        ] = None,
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.asset_upload_complete(
+                ctx, asset_id=assetId, checksum_sha256=checksumSha256
+            ),
+            tool_name="asset_upload_complete",
+            idempotency_key=idempotencyKey,
         )
 
 
