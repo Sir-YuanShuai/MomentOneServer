@@ -616,6 +616,8 @@ async def test_bookkeeping_create_flow(
         assert sc["amount"] == 35.5
         assert sc["flow"] == "expense"
         assert sc["revision"] == 1
+        assert sc["created"] is True
+        assert sc["replayed"] is False
 
         # 落库 + 幂等缓存 + 审计
         assert len(fake_repos["moment"]._store) == 1
@@ -646,7 +648,10 @@ async def test_bookkeeping_create_flow(
             },
         )
     assert len(fake_repos["moment"]._store) == 1
-    assert data2["result"]["structuredContent"]["id"] == sc["id"]
+    replay = data2["result"]["structuredContent"]
+    assert replay["id"] == sc["id"]
+    assert replay["created"] is False
+    assert replay["replayed"] is True
 
 
 @pytest.mark.asyncio
