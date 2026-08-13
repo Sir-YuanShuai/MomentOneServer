@@ -89,7 +89,7 @@ def _make_settings(tmp_path: Path, *, port: int) -> Settings:
         binding_code_ttl_seconds=300,
         binding_code_length=24,
         mcp_base_url=f"http://127.0.0.1:{port}",
-        mcp_apps_html_path=None,
+        mcp_apps_asset_base_url="https://moment-one.yuanshuai.fun/mcp-apps",
     )
 
 

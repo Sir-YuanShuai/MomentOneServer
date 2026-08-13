@@ -12,8 +12,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from mcp.server.apps import Apps
+from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
@@ -30,29 +31,18 @@ BOOKKEEPING_UI_URI = "ui://moment-one/bookkeeping"
 TIMELINE_UI_URI = "ui://moment-one/timeline"
 HABITS_UI_URI = "ui://moment-one/habits"
 
-# Apps HTML 缺失时的降级资源（保证 tools/list 与工具调用不因 UI 文件缺失而失败）
-_FALLBACK_APPS_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head><meta charset="UTF-8"><title>Moment One 记账</title></head>
-<body>
-  <div id="root" style="font-family: system-ui; padding: 16px;">
-    <p>Moment One 记账 App 未配置（mcp_apps_html_path 指向的 HTML 文件缺失）。</p>
-    <p>请通过 MCP 工具调用获取数据。</p>
-  </div>
-</body>
-</html>"""
 
-_FALLBACK_TIMELINE_HTML = """<!DOCTYPE html><html lang="zh-CN"><body>
-<div style="font-family:system-ui;padding:16px">
-Moment One 时间线 UI 尚未构建，请使用 moments_list / moments_search 工具。
-</div>
-</body></html>"""
+# MCP Apps 轻量启动壳；业务结果始终另有 content 文本降级。
+def _app_shell(asset_url: str, title: str) -> str:
+    """只承载 CDN 入口的 MCP App HTML；不内联 bundle 或用户数据。"""
+    return (
+        '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>{title}</title></head><body>"
+        '<main id="root" aria-live="polite">正在加载 Moment One…</main>'
+        f'<script type="module" src="{asset_url}"></script></body></html>'
+    )
 
-_FALLBACK_HABITS_HTML = """<!DOCTYPE html><html lang="zh-CN"><body>
-<div style="font-family:system-ui;padding:16px">
-Moment One 习惯 UI 尚未构建，请使用 habit_progress 工具。
-</div>
-</body></html>"""
 
 # 工具描述（供模型理解；错误码与 docs/contracts/MCP_SERVER.md §7 对齐）
 _TOOL_DESCRIPTIONS: dict[str, str] = {
@@ -138,9 +128,8 @@ async def _call_with_a2ui(
 def build_mcp_server(
     *,
     env: McpToolEnv,
-    apps_html: str | None = None,
-    timeline_html: str | None = None,
-    habits_html: str | None = None,
+    apps_asset_base_url: str = "https://moment-one.yuanshuai.fun/mcp-apps",
+    apps_version: str = "v1",
     token_verifier: TokenVerifier | None = None,
     auth: AuthSettings | None = None,
 ) -> MCPServer:
@@ -152,34 +141,36 @@ def build_mcp_server(
     _register_bookkeeping_summary(apps, env)
     _register_moment_app_tools(apps, env)
     _register_habit_app_tools(apps, env)
+    asset_root = f"{apps_asset_base_url.rstrip('/')}/{apps_version.strip('/')}"
+    parsed_asset_root = urlparse(asset_root)
+    if parsed_asset_root.scheme not in {"http", "https"} or not parsed_asset_root.netloc:
+        raise ValueError("MCP Apps asset base URL 必须是带 origin 的 HTTP(S) URL")
+    resource_origin = f"{parsed_asset_root.scheme}://{parsed_asset_root.netloc}"
+    csp = ResourceCsp(resource_domains=[resource_origin])
     apps.add_html_resource(
         BOOKKEEPING_UI_URI,
-        apps_html or _FALLBACK_APPS_HTML,
+        _app_shell(f"{asset_root}/assets/bookkeeping.js", "Moment One 记账"),
         name="Moment One 记账",
         title="记账",
         description="记账记录列表 + 收支统计（ui://moment-one/bookkeeping）",
+        csp=csp,
     )
     apps.add_html_resource(
         TIMELINE_UI_URI,
-        timeline_html or _FALLBACK_TIMELINE_HTML,
+        _app_shell(f"{asset_root}/assets/timeline.js", "Moment One 时间线"),
         name="Moment One 记忆时间线",
         title="记忆时间线",
         description="时间线、搜索、详情和每日回顾（ui://moment-one/timeline）",
+        csp=csp,
     )
     apps.add_html_resource(
         HABITS_UI_URI,
-        habits_html or _FALLBACK_HABITS_HTML,
+        _app_shell(f"{asset_root}/assets/habits.js", "Moment One 习惯"),
         name="Moment One 习惯",
         title="习惯追踪",
         description="习惯目标、七日进度与快捷打卡（ui://moment-one/habits）",
+        csp=csp,
     )
-    for uri, html in (
-        (BOOKKEEPING_UI_URI, apps_html),
-        (TIMELINE_UI_URI, timeline_html),
-        (HABITS_UI_URI, habits_html),
-    ):
-        if not html:
-            logger.warning("%s 使用降级占位资源", uri)
 
     server = MCPServer(
         name="moment-one-mcp",
@@ -292,7 +283,13 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
             bool | None, Field(default=None, description="是否计入预算（默认 true）")
         ] = None,
         idempotencyKey: Annotated[
-            str | None, Field(default=None, description="幂等键（可选，重试安全）")
+            str | None,
+            Field(
+                default=None,
+                min_length=8,
+                max_length=160,
+                description="客户端生成的幂等键；新客户端必须传，暂兼容旧眼镜客户端省略",
+            ),
         ] = None,
         title: Annotated[
             str | None,

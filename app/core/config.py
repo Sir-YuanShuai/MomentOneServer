@@ -105,8 +105,9 @@ class Settings(BaseSettings):
     mcp_auth_code_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     # MCP OAuth 客户端注册表 / 授权码存储
     mcp_oauth_clients_enabled: bool = True
-    # MCP Apps UI 资源（bookkeeping.html 单文件产物路径，相对仓库根）
-    mcp_apps_html_path: str | None = None
+    # MCP Apps 静态资源由 MomentOneWeb/CDN 托管；公开 URL，不含密钥。
+    mcp_apps_asset_base_url: str = "https://moment-one.yuanshuai.fun/mcp-apps"
+    mcp_apps_version: str = "v1"
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

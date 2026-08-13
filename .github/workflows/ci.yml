@@ -106,18 +106,16 @@ jobs:
           assert get_schema('habit')['title'];
           print('registry schemas OK')"
 
-      - name: Smoke-test MCP Apps UI resources in image
+      - name: Smoke-test MCP Apps lightweight shells in image
         run: >-
-          docker exec -e MOMENT_ONE_MCP_APPS_HTML_PATH=/app/mcp_apps/bookkeeping/dist/bookkeeping.html
-          moment-one-server python -c
+          docker exec moment-one-server python -c
           "from app.core.config import Settings;
-          from app.modules.mcp.endpoint import _load_apps_html;
-          html = _load_apps_html(Settings());
-          assert all(html.values());
-          assert 'Moment One' in html['bookkeeping'];
-          assert 'Moment One' in html['timeline'];
-          assert 'Moment One' in html['habits'];
-          print('MCP Apps UI OK:', {k: len(v or '') for k, v in html.items()})"
+          from app.modules.mcp.server import _app_shell;
+          s = Settings();
+          html = _app_shell(s.mcp_apps_asset_base_url + '/' + s.mcp_apps_version + '/assets/bookkeeping.js', 'Moment One');
+          assert len(html) < 2048;
+          assert 'bookkeeping.js' in html;
+          print('MCP Apps lightweight shell OK:', len(html))"
 
       - name: Print container logs on failure
         if: failure()

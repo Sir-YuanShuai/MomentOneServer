@@ -87,12 +87,6 @@ def _generate_rsa_keypair(tmp_path: Path) -> tuple[Path, Path]:
 
 def _make_settings(tmp_path: Path) -> Settings:
     priv_path, pub_path = _generate_rsa_keypair(tmp_path)
-    apps_html = tmp_path / "bookkeeping.html"
-    apps_html.write_text(
-        "<!DOCTYPE html><html><body><div id=app>test bookkeeping app</div>"
-        '<script src="https://example.invalid/app.js"></script></body></html>',
-        encoding="utf-8",
-    )
     return Settings(
         env="test",
         database_url="postgresql+psycopg://test:test@127.0.0.1:5432/test",
@@ -105,7 +99,8 @@ def _make_settings(tmp_path: Path) -> Settings:
         binding_code_ttl_seconds=300,
         binding_code_length=24,
         mcp_base_url="http://testserver",
-        mcp_apps_html_path=str(apps_html),
+        mcp_apps_asset_base_url="https://web.example.test/mcp-apps",
+        mcp_apps_version="test-v1",
     )
 
 
@@ -982,12 +977,28 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
             token,
             {"jsonrpc": "2.0", "id": 50, "method": "resources/list", "params": {}},
         )
+        resource = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 51,
+                "method": "resources/read",
+                "params": {"uri": "ui://moment-one/bookkeeping"},
+            },
+        )
     uris = {resource["uri"] for resource in data["result"]["resources"]}
     assert {
         "ui://moment-one/bookkeeping",
         "ui://moment-one/timeline",
         "ui://moment-one/habits",
     } <= uris
+    content = resource["result"]["contents"][0]
+    assert content["mimeType"] == "text/html;profile=mcp-app"
+    assert "https://web.example.test/mcp-apps/test-v1/assets/bookkeeping.js" in content["text"]
+    assert len(content["text"]) < 2048
+    assert content["_meta"]["ui"]["csp"]["resourceDomains"] == ["https://web.example.test"]
 
 
 @pytest.mark.asyncio
