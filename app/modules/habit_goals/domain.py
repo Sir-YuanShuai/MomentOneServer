@@ -19,5 +19,7 @@ class HabitGoal:
     unit: str | None = None
     frequency: str | None = None  # daily / weekly
     times_per_week: int | None = None
+    target_period: str = "daily"
+    target_count: int = 1
     color: str | None = None
     deleted_at: datetime | None = None

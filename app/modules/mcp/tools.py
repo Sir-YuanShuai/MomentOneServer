@@ -25,6 +25,7 @@ from mcp.types import CallToolResult, TextContent
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
+from app.infrastructure.database.models.user_feedback import UserFeedback
 from app.infrastructure.database.repositories.audit_event_repository import (
     SqlAuditEventRepository,
 )
@@ -45,6 +46,7 @@ from app.infrastructure.database.repositories.notification_repository import (
     NotificationPipelineRepository,
     ReminderRepository,
 )
+from app.infrastructure.database.repositories.user_feedback_repository import UserFeedbackRepository
 from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport, build_a2ui_result, build_text_summary
 from app.modules.mcp.scope import has_scope
@@ -1413,6 +1415,8 @@ def _habit_goal_item(goal: HabitGoal) -> dict:
         "unit": goal.unit,
         "frequency": goal.frequency,
         "timesPerWeek": goal.times_per_week,
+        "targetPeriod": goal.target_period,
+        "targetCount": goal.target_count,
         "color": goal.color,
         "revision": goal.revision,
         "createdAt": goal.created_at.isoformat(),
@@ -1438,6 +1442,8 @@ async def habit_goal_create(
     unit: str | None,
     frequency: str,
     times_per_week: int | None,
+    target_period: str | None,
+    target_count: int | None,
     color: str | None,
     idempotency_key: str,
 ) -> CallToolResult:
@@ -1449,13 +1455,23 @@ async def habit_goal_create(
             message="name 必须为 1~30 个字符。",
             status_code=400,
         )
-    if frequency not in {"daily", "weekly"}:
+    if frequency not in {"daily", "weekly", "monthly"}:
         raise ApplicationError(
             code="INVALID_ARGUMENTS",
-            message="frequency 只能是 daily 或 weekly。",
+            message="frequency 只能是 daily、weekly 或 monthly。",
             status_code=400,
         )
-    if frequency == "weekly" and not times_per_week:
+    resolved_period = target_period or frequency
+    resolved_count = target_count or times_per_week or 1
+    if resolved_period not in {"daily", "weekly", "monthly"}:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="targetPeriod 不合法。", status_code=400
+        )
+    if not 1 <= resolved_count <= 366:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="targetCount 必须在 1~366。", status_code=400
+        )
+    if frequency == "weekly" and not (times_per_week or target_count):
         raise ApplicationError(
             code="INVALID_ARGUMENTS",
             message="weekly 目标必须提供 timesPerWeek。",
@@ -1472,6 +1488,8 @@ async def habit_goal_create(
         "unit": unit,
         "frequency": frequency,
         "timesPerWeek": times_per_week,
+        "targetPeriod": resolved_period,
+        "targetCount": resolved_count,
         "color": color,
     }
     idem_repo = SqlIdempotencyRepository(ctx.session)
@@ -1504,6 +1522,8 @@ async def habit_goal_create(
             unit=unit.strip() if unit else None,
             frequency=frequency,
             times_per_week=times_per_week,
+            target_period=resolved_period,
+            target_count=resolved_count,
             color=color,
             revision=1,
             created_at=now,
@@ -1533,6 +1553,136 @@ async def habit_goal_create(
             "created": not replayed,
             "replayed": replayed,
             "goal": _habit_goal_item(created),
+        }
+    )
+
+
+async def habit_goal_update(
+    ctx: McpCallContext,
+    *,
+    goal_id: str,
+    expected_revision: int,
+    name: str | None,
+    unit: str | None,
+    target_period: str | None,
+    target_count: int | None,
+    color: str | None,
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    try:
+        goal_uuid = UUID(goal_id)
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="goalId 不是合法 UUID。", status_code=400
+        ) from exc
+    repo = SqlHabitGoalRepository(ctx.session)
+    existing = await repo.get_by_id(goal_uuid, ctx.user_id)
+    if existing is None:
+        raise ApplicationError(
+            code="HABIT_GOAL_NOT_FOUND", message="未找到该习惯目标。", status_code=404
+        )
+    if existing.revision != expected_revision:
+        raise ApplicationError(
+            code="REVISION_CONFLICT",
+            message="习惯目标已更新，请刷新后重试。",
+            status_code=409,
+            details={"actualRevision": existing.revision},
+        )
+    fields: dict = {}
+    if name is not None:
+        fields["name"] = name.strip()
+    if unit is not None:
+        fields["unit"] = unit.strip() or None
+    if target_period is not None:
+        if target_period not in {"daily", "weekly", "monthly"}:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS", message="targetPeriod 不合法。", status_code=400
+            )
+        fields["target_period"] = target_period
+        fields["frequency"] = target_period
+    if target_count is not None:
+        if not 1 <= target_count <= 366:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS", message="targetCount 必须在 1~366。", status_code=400
+            )
+        fields["target_count"] = target_count
+        fields["times_per_week"] = (
+            target_count if (target_period or existing.target_period) == "weekly" else None
+        )
+    if color is not None:
+        fields["color"] = color
+    updated = await repo.update(goal_uuid, ctx.user_id, **fields)
+    assert updated is not None
+    return _tool_result(
+        ctx,
+        "habit_goal_update",
+        {"schemaVersion": SCHEMA_VERSION, "updated": True, "goal": _habit_goal_item(updated)},
+    )
+
+
+async def habit_reminder_create_for_goal(
+    ctx: McpCallContext,
+    *,
+    goal_result: CallToolResult,
+    local_date_time: str,
+    timezone_name: str | None,
+    idempotency_key: str,
+) -> CallToolResult:
+    data = goal_result.structured_content or {}
+    goal = data.get("goal") if isinstance(data, dict) else None
+    if not isinstance(goal, dict) or not goal.get("id"):
+        raise ApplicationError(
+            code="INTERNAL_ERROR", message="创建习惯提醒时缺少目标信息。", status_code=500
+        )
+    timezone_name = await _resolve_timezone(ctx, timezone_name)
+    parsed_due, _ = resolve_reminder_time(
+        remind_at=None,
+        local_date_time=local_date_time,
+        after_minutes=None,
+        timezone_name=timezone_name,
+    )
+    reminder = await ReminderService(
+        ReminderRepository(ctx.session), NotificationPipelineRepository(ctx.session)
+    ).create(
+        user_id=ctx.user_id,
+        title=f"{goal.get('name', '习惯')}提醒",
+        body="完成后记得在 Moment One 打卡。",
+        scene="habit",
+        due_at=parsed_due,
+        timezone=timezone_name,
+        source_type="habit_goal",
+        source_id=str(goal["id"]),
+        correlation_id=ctx.request_id or idempotency_key,
+    )
+    data["reminder"] = serialize_reminder(reminder)
+    return goal_result
+
+
+async def feedback_submit(
+    ctx: McpCallContext, *, kind: str, summary: str, details: str | None, context: dict | None
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    if kind not in {"bug", "feature_request", "usability", "question", "other"}:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="反馈类型不合法。", status_code=400
+        )
+    item = await UserFeedbackRepository(ctx.session).create(
+        UserFeedback(
+            user_id=ctx.user_id,
+            kind=kind,
+            summary=summary.strip(),
+            details=details.strip() if details else None,
+            context={**(context or {}), "clientMethod": ctx.method},
+            source="mcp",
+            status="new",
+        )
+    )
+    return _text_result(
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "accepted": True,
+            "feedbackId": str(item.id),
+            "status": item.status,
         }
     )
 
@@ -1608,6 +1758,7 @@ async def habit_progress(
     *,
     days: int,
     timezone_name: str | None,
+    goal_id: str | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.read")
     zone = _parse_timezone(timezone_name)
@@ -1616,6 +1767,24 @@ async def habit_progress(
     start = datetime.combine(start_day, time.min, tzinfo=zone).astimezone(UTC)
     end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=zone).astimezone(UTC)
     goals = await SqlHabitGoalRepository(ctx.session).list_by_user(ctx.user_id)
+    if goal_id is not None:
+        try:
+            selected_id = UUID(goal_id)
+        except (ValueError, TypeError) as exc:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="goalId 不是合法的 UUID。",
+                status_code=400,
+                details={"goalId": goal_id},
+            ) from exc
+        goals = [goal for goal in goals if goal.id == selected_id]
+        if not goals:
+            raise ApplicationError(
+                code="HABIT_GOAL_NOT_FOUND",
+                message="未找到该习惯目标。",
+                status_code=404,
+                details={"goalId": goal_id},
+            )
     checkins = await PostgresMomentRepository(ctx.session).list_by_user_range(
         ctx.user_id,
         occurred_from=start,
@@ -1638,6 +1807,14 @@ async def habit_progress(
     for goal in goals:
         goal_id = str(goal.id)
         dates = completed.get(goal_id, set())
+        if goal.target_period == "monthly":
+            period_start = today.replace(day=1)
+        elif goal.target_period == "weekly":
+            period_start = today - timedelta(days=today.weekday())
+        else:
+            period_start = today
+        period_completed = sum(1 for item in dates if period_start <= item <= today)
+        target_count = max(1, goal.target_count)
         streak = 0
         cursor = today
         while cursor in dates:
@@ -1649,6 +1826,16 @@ async def habit_progress(
                 "todayDone": today in dates,
                 "completedDays": len(dates),
                 "currentStreak": streak,
+                "currentPeriod": {
+                    "period": goal.target_period,
+                    "from": period_start.isoformat(),
+                    "to": today.isoformat(),
+                    "completed": period_completed,
+                    "target": target_count,
+                    "remaining": max(0, target_count - period_completed),
+                    "achieved": period_completed >= target_count,
+                    "progress": round(min(1, period_completed / target_count), 4),
+                },
                 "days": [{"date": day.isoformat(), "done": day in dates} for day in day_labels],
             }
         )
@@ -2060,8 +2247,10 @@ __all__ = [
     "moments_get",
     "habit_goals_list",
     "habit_goal_create",
+    "habit_goal_update",
     "habit_checkin_create",
     "habit_progress",
+    "feedback_submit",
     "reminder_create",
     "agent_plan",
     "a2ui_action",

@@ -37,6 +37,7 @@ from app.infrastructure.database.models.notification import (
 from app.infrastructure.database.models.push_subscription import PushSubscription
 from app.infrastructure.database.models.quota import ApiUsageBucket, QuotaAccount, QuotaUsageEvent
 from app.infrastructure.database.models.sync_change import SyncChange
+from app.infrastructure.database.models.user_feedback import UserFeedback
 
 __all__ = [
     "AccountLinkSession",
@@ -72,4 +73,5 @@ __all__ = [
     "UserEntitlement",
     "UserStorageAccount",
     "UserIdentity",
+    "UserFeedback",
 ]

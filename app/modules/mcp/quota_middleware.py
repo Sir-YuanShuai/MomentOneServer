@@ -32,5 +32,17 @@ class McpToolVisibilityMiddleware:
             result.tools = []
             return result
         visible = await self._env.visible_tool_names(user_id, tuple(token.scopes or []))
+        claims = token.claims or {}
+        is_glasses = claims.get("method") == "glasses"
+        glasses_only = {"bookkeeping_plan", "agent_plan", "a2ui_action"}
+        if not is_glasses:
+            visible = visible - glasses_only
         result.tools = [tool for tool in result.tools if tool.name in visible]
+        if is_glasses:
+            # 眼镜只消费 A2UI，不能收到 MCP Apps 的 ui:// 模板绑定。
+            for tool in result.tools:
+                if not tool.meta:
+                    continue
+                tool.meta.pop("ui", None)
+                tool.meta.pop("openai/outputTemplate", None)
         return result

@@ -46,6 +46,8 @@ def _to_dict(goal: HabitGoal) -> dict:
         "unit": goal.unit,
         "frequency": goal.frequency,
         "timesPerWeek": goal.times_per_week,
+        "targetPeriod": goal.target_period,
+        "targetCount": goal.target_count,
         "color": goal.color,
         "revision": goal.revision,
         "createdAt": goal.created_at.isoformat(),
@@ -59,6 +61,8 @@ class CreateHabitGoalRequest(BaseModel):
     unit: str | None = Field(default=None, max_length=20)
     frequency: str | None = Field(default=None, max_length=16)
     timesPerWeek: int | None = Field(default=None, ge=1, le=30)
+    targetPeriod: str | None = Field(default=None, pattern="^(daily|weekly|monthly)$")
+    targetCount: int | None = Field(default=None, ge=1, le=366)
     color: str | None = Field(default=None, max_length=16)
 
 
@@ -68,6 +72,8 @@ class UpdateHabitGoalRequest(BaseModel):
     unit: str | None = Field(default=None, max_length=20)
     frequency: str | None = Field(default=None, max_length=16)
     timesPerWeek: int | None = Field(default=None, ge=1, le=30)
+    targetPeriod: str | None = Field(default=None, pattern="^(daily|weekly|monthly)$")
+    targetCount: int | None = Field(default=None, ge=1, le=366)
     color: str | None = Field(default=None, max_length=16)
 
 
@@ -107,6 +113,8 @@ async def create_habit_goal(
         unit=body.unit.strip() if body.unit else None,
         frequency=body.frequency,
         times_per_week=body.timesPerWeek,
+        target_period=body.targetPeriod or body.frequency or "daily",
+        target_count=body.targetCount or body.timesPerWeek or 1,
         color=body.color,
         revision=1,
         created_at=now,
@@ -174,6 +182,14 @@ async def update_habit_goal(
         fields["frequency"] = body.frequency
     if body.timesPerWeek is not None:
         fields["times_per_week"] = body.timesPerWeek
+    if body.targetPeriod is not None:
+        fields["target_period"] = body.targetPeriod
+        fields["frequency"] = body.targetPeriod
+    if body.targetCount is not None:
+        fields["target_count"] = body.targetCount
+        fields["times_per_week"] = (
+            body.targetCount if (body.targetPeriod or existing.target_period) == "weekly" else None
+        )
     if body.color is not None:
         fields["color"] = body.color
     updated = await repo.update(UUID(goal_id), user_id, **fields)
