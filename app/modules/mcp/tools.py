@@ -377,7 +377,12 @@ async def bookkeeping_create(
                 status_code=409,
             )
         if idem_record.state == "completed" and idem_record.response_body is not None:
-            return _tool_result(ctx, "bookkeeping_create", idem_record.response_body)
+            replay_response = {
+                **idem_record.response_body,
+                "created": False,
+                "replayed": True,
+            }
+            return _tool_result(ctx, "bookkeeping_create", replay_response)
 
     moment = Moment(
         id=uuid4(),
@@ -418,6 +423,8 @@ async def bookkeeping_create(
         "ledger": payload.get("ledger"),
         "occurredAt": created.occurred_at.isoformat(),
         "revision": created.revision,
+        "created": True,
+        "replayed": False,
     }
 
     # 版本快照
