@@ -48,7 +48,8 @@ def _app_shell(asset_url: str, title: str) -> str:
 _TOOL_DESCRIPTIONS: dict[str, str] = {
     "bookkeeping_create": (
         "记录一笔账（bookkeeping）。需要 moments.write 权限。"
-        "amount 金额、flow 流向（expense/income）、occurredAt 发生时间（ISO-8601）为必填；"
+        "amount 金额、flow 流向（expense/income）为必填；occurredAt 省略时由 Server 记录接收时刻，"
+        "补录过去账目时传带 offset 的 ISO-8601；timezone 省略时使用账号时区。"
         "category 分类（如餐饮、交通）、merchant 商家、ledger 账本、account 账户可选。"
         "支持 idempotencyKey 幂等重试。非法 payload 返回 INVALID_ARGUMENTS。"
     ),
@@ -74,8 +75,10 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
     "habit_progress": "返回习惯目标在最近若干天的完成情况、今日状态与连续天数。",
     "reminder_create": (
-        "创建由 Moment One Server 调度的提醒。需要 moments.write、未来的带时区 remindAt "
-        "以及 idempotencyKey；即使前端未打开，到期后也会按账号通知设置投递。"
+        "创建由 Moment One Server 调度的提醒。时间三选一：带 offset 的 remindAt、"
+        "localDateTime + IANA timezone、或 afterMinutes；不要自行把用户本地时间换算成 UTC。"
+        "timezone 省略时使用账号时区。日期或时间语义不明确时先询问用户。"
+        "需要 moments.write 和 idempotencyKey；到期后按账号通知设置投递。"
     ),
     "agent_plan": (
         "把用户完整原话规划为一个当前已注册、参数合法且 Scope 允许的真实 MCP Tool。"
@@ -258,8 +261,18 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
             Literal["expense", "income"], Field(description="流向：expense=支出，income=收入")
         ],
         occurredAt: Annotated[
-            str, Field(description="发生时间（ISO-8601，如 2026-08-05T12:00:00+08:00）")
-        ],
+            str | None,
+            Field(default=None, description="带 offset 的事实发生时间；省略表示服务器接收时刻"),
+        ] = None,
+        occurredLocalDateTime: Annotated[
+            str | None,
+            Field(
+                default=None, description="补录用本地时间，需配合 timezone；与 occurredAt 二选一"
+            ),
+        ] = None,
+        timezone: Annotated[
+            str | None, Field(default=None, description="IANA 时区；默认账号时区")
+        ] = None,
         account: Annotated[
             str | None,
             Field(default=None, max_length=30, description="收支账户（如：微信、支付宝）"),
@@ -304,6 +317,8 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
                 amount=amount,
                 flow=flow,
                 occurred_at=occurredAt,
+                occurred_local_date_time=occurredLocalDateTime,
+                timezone_name=timezone,
                 account=account,
                 category=category,
                 merchant=merchant,
@@ -547,9 +562,18 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         persons: Annotated[list[str] | None, Field(default=None, max_length=10)] = None,
         event: Annotated[str | None, Field(default=None, max_length=50)] = None,
         occurredAt: Annotated[
-            str | None, Field(default=None, description="ISO-8601；默认当前时间")
+            str | None,
+            Field(default=None, description="带 offset 的事实发生时间；默认服务器接收时刻"),
         ] = None,
-        timezone: Annotated[str, Field(default="UTC", description="IANA 时区")] = "UTC",
+        occurredLocalDateTime: Annotated[
+            str | None,
+            Field(
+                default=None, description="补录用本地时间，需配合 timezone；与 occurredAt 二选一"
+            ),
+        ] = None,
+        timezone: Annotated[
+            str | None, Field(default=None, description="IANA 时区；默认账号时区")
+        ] = None,
         type: Annotated[str, Field(default="general")] = "general",
         payload: Annotated[dict | None, Field(default=None)] = None,
     ) -> object:
@@ -563,6 +587,7 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 persons=persons,
                 event=event,
                 occurred_at=occurredAt,
+                occurred_local_date_time=occurredLocalDateTime,
                 timezone_name=timezone,
                 moment_type=type,
                 payload=payload,
@@ -756,9 +781,21 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
     )
     async def reminder_create(  # pyright: ignore[reportUnusedFunction]
         title: Annotated[str, Field(min_length=1, max_length=160)],
-        remindAt: Annotated[str, Field(description="带时区的 ISO-8601 未来提醒时间")],
-        timezone: Annotated[str, Field(description="IANA 时区，如 Asia/Shanghai")],
         idempotencyKey: Annotated[str, Field(min_length=8, max_length=160)],
+        remindAt: Annotated[
+            str | None, Field(default=None, description="绝对时间 RFC3339，必须带 UTC offset")
+        ] = None,
+        localDateTime: Annotated[
+            str | None,
+            Field(default=None, description="用户所在时区的本地时间 YYYY-MM-DDTHH:MM[:SS]"),
+        ] = None,
+        afterMinutes: Annotated[
+            int | None,
+            Field(default=None, ge=1, le=525600, description="从服务器接收时刻起延后分钟数"),
+        ] = None,
+        timezone: Annotated[
+            str | None, Field(default=None, description="IANA 时区；默认账号时区")
+        ] = None,
         note: Annotated[str | None, Field(default=None, max_length=2000)] = None,
         scene: Annotated[
             Literal["general", "bookkeeping", "habit"], Field(default="general")
@@ -772,6 +809,8 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
                 note=note,
                 scene=scene,
                 remind_at=remindAt,
+                local_date_time=localDateTime,
+                after_minutes=afterMinutes,
                 deadline_at=dueAt,
                 timezone_name=timezone,
                 idempotency_key=idempotencyKey,

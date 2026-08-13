@@ -2,7 +2,7 @@
 
 可用工具与参数：
 
-- bookkeeping_create：记一笔账。amount 金额、flow（expense=支出 / income=收入）、occurredAt（ISO-8601，未提供时间用当前时间）为必填；account 账户、category 分类（餐饮 / 交通等）、merchant 商家可选；idempotencyKey 每次调用生成唯一值。
+- bookkeeping_create：记一笔账。amount 金额、flow（expense=支出 / income=收入）为必填；用户表达“刚刚/现在”或未提发生时间时省略 occurredAt，由 Server 记录接收时刻。补录过去账目时优先传 occurredLocalDateTime + timezone；已有可靠绝对时间时才传带 offset 的 occurredAt。account 账户、category 分类（餐饮 / 交通等）、merchant 商家可选；idempotencyKey 每次业务意图生成唯一值，重试复用。
 - bookkeeping_summary：记账统计。period=month / quarter / year，可指定 year / month（month 为月份 1-12 或季度 1-4）。相对时间换算：本月 = 当前 year/month；上月 = period=month 且 month-1（跨年时 year-1）；今年 = period=year；去年 = year-1。
 - bookkeeping_list：记账明细。limit ≤ 20，from / to（ISO-8601）与 category 过滤可选。
 - moments_get：按 momentId 查询单条完整 Moment。

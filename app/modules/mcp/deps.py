@@ -10,6 +10,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
+from app.infrastructure.database.repositories.user_repository import UserRepository
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport
 from app.modules.mcp.scope import has_scope
 from app.modules.mcp.tools import McpCallContext, err_result
@@ -99,6 +100,7 @@ class McpToolEnv:
 
         async with self._session_factory() as session:
             quota_repo = QuotaRepository(session)
+            account = await UserRepository(session).get(user_id) if self._enforce_quotas else None
             ctx = McpCallContext(
                 user_id=user_id,
                 scopes=scopes,
@@ -106,6 +108,7 @@ class McpToolEnv:
                 actor_id=str(actor_id) if actor_id else None,
                 request_id=request_id,
                 session=session,
+                account_timezone=account.timezone if account else None,
                 a2ui=a2ui_support,
             )
             try:
