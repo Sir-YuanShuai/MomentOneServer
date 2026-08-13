@@ -60,8 +60,6 @@ def _generate_rsa_keypair(tmp_path: Path) -> tuple[Path, Path]:
 
 def _make_settings(tmp_path: Path) -> Settings:
     priv_path, pub_path = _generate_rsa_keypair(tmp_path)
-    apps_html = tmp_path / "bookkeeping.html"
-    apps_html.write_text("<html><body>test</body></html>", encoding="utf-8")
     return Settings(
         env="test",
         database_url="postgresql+psycopg://test:test@127.0.0.1:5432/test",
@@ -79,7 +77,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         casdoor_mcp_client_id="mcp-proxy-client",
         casdoor_mcp_client_secret="proxy-secret",
         casdoor_mcp_redirect_uri=None,  # 显式覆盖 .env，避免回退到真实环境变量
-        mcp_apps_html_path=str(apps_html),
+        mcp_apps_asset_base_url="https://web.example.test/mcp-apps",
     )
 
 

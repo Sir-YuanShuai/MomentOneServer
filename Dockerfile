@@ -20,7 +20,6 @@ COPY app ./app
 COPY contracts ./contracts
 COPY migrations ./migrations
 COPY alembic.ini ./alembic.ini
-COPY mcp_apps ./mcp_apps
 RUN python -m pip install --upgrade pip && python -m pip install .
 
 USER appuser
