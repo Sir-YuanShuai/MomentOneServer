@@ -23,6 +23,8 @@ class HabitGoal(Base):
     unit: Mapped[str | None] = mapped_column(String(20))
     frequency: Mapped[str | None] = mapped_column(String(16))  # daily / weekly
     times_per_week: Mapped[int | None] = mapped_column(Integer)
+    target_period: Mapped[str] = mapped_column(String(16), default="daily")
+    target_count: Mapped[int] = mapped_column(Integer, default=1)
     color: Mapped[str | None] = mapped_column(String(16))
     revision: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

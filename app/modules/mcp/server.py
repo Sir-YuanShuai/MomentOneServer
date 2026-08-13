@@ -54,7 +54,8 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
         "支持 idempotencyKey 幂等重试。非法 payload 返回 INVALID_ARGUMENTS。"
     ),
     "bookkeeping_list": (
-        "按时间倒序列出记账记录。limit 不超过 20，支持 cursor 分页与 from/to/category/ledger 过滤。"
+        "按发生时间倒序列出记账记录。limit 不超过 20，返回多少条，UI 就展示多少条；"
+        "支持 cursor 分页与 from/to/category/ledger 过滤。"
     ),
     "bookkeeping_summary": (
         "记账统计（服务端聚合）：周期内收支合计 + 分类小计，口径与 Web 记账板块一致。"
@@ -72,8 +73,11 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "moments_get": "按 momentId 查询单条完整 Moment（含 type/payload/provenance）。",
     "habit_goals_list": "列出当前用户的习惯目标。",
     "habit_goal_create": "创建一个每日或每周习惯目标，需要 moments.write。",
+    "habit_goal_update": "修改习惯名称、单位或每日/每周/每月目标；必须传 expectedRevision。",
     "habit_checkin_create": "为一个习惯目标写入打卡 Moment，需要 moments.write 和 idempotencyKey。",
-    "habit_progress": "返回习惯目标在最近若干天的完成情况、今日状态与连续天数。",
+    "habit_progress": (
+        "返回指定习惯（goalId）或全部习惯在最近若干天的完成情况、今日状态与连续天数。"
+    ),
     "reminder_create": (
         "创建由 Moment One Server 调度的提醒。时间三选一：带 offset 的 remindAt、"
         "localDateTime + IANA timezone、或 afterMinutes；不要自行把用户本地时间换算成 UTC。"
@@ -86,6 +90,9 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     ),
     "a2ui_action": "处理 A2UI 白名单只读 Action，返回后续真实 Tool 计划，不直接执行任意工具。",
     "account_entitlements": "查看当前账号套餐、存储和 MCP/Planner/AI 等额度，不消耗商业调用额度。",
+    "feedback_submit": (
+        "提交用户对 Moment One 的问题、体验反馈或功能建议。仅在用户明确表达反馈意愿时调用。"
+    ),
 }
 
 # 远程提示词：眼镜端 LanguageModel 的记账助手指令（工具与提示词均由远程提供，
@@ -157,6 +164,7 @@ def build_mcp_server(
         title="记账",
         description="记账记录列表 + 收支统计（ui://moment-one/bookkeeping）",
         csp=csp,
+        domain=resource_origin,
     )
     apps.add_html_resource(
         TIMELINE_UI_URI,
@@ -165,6 +173,7 @@ def build_mcp_server(
         title="记忆时间线",
         description="时间线、搜索、详情和每日回顾（ui://moment-one/timeline）",
         csp=csp,
+        domain=resource_origin,
     )
     apps.add_html_resource(
         HABITS_UI_URI,
@@ -173,6 +182,7 @@ def build_mcp_server(
         title="习惯追踪",
         description="习惯目标、七日进度与快捷打卡（ui://moment-one/habits）",
         csp=csp,
+        domain=resource_origin,
     )
 
     server = MCPServer(
@@ -192,6 +202,7 @@ def build_mcp_server(
     _register_a2ui_action(server, env)
     _register_account_entitlements(server, env)
     _register_reminder_create(server, env)
+    _register_feedback_submit(server, env)
     _register_bookkeeping_prompt(server)
     server.middleware.append(McpToolVisibilityMiddleware(env))
 
@@ -348,7 +359,9 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
     )
     async def bookkeeping_list(  # pyright: ignore[reportUnusedFunction]
         mcp_ctx: Context,
-        limit: Annotated[int, Field(default=20, ge=1, le=20, description="每页数量（≤20）")] = 20,
+        limit: Annotated[
+            int, Field(default=20, ge=1, le=20, description="本次展示数量（≤20）")
+        ] = 20,
         cursor: Annotated[
             str | None, Field(default=None, description="不透明分页游标（上页 nextCursor）")
         ] = None,
@@ -449,7 +462,9 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
     )
     async def moments_list(  # pyright: ignore[reportUnusedFunction]
         mcp_ctx: Context,
-        limit: Annotated[int, Field(default=20, ge=1, le=20)] = 20,
+        limit: Annotated[
+            int, Field(default=20, ge=1, le=20, description="本次展示数量（≤20）")
+        ] = 20,
         cursor: Annotated[str | None, Field(default=None, description="上一页 nextCursor")] = None,
         type: Annotated[
             str | None, Field(default=None, description="记录类型，如 general/habit/bookkeeping")
@@ -484,7 +499,9 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
     async def moments_search(  # pyright: ignore[reportUnusedFunction]
         mcp_ctx: Context,
         query: Annotated[str, Field(min_length=1, description="搜索词或短语")],
-        limit: Annotated[int, Field(default=20, ge=1, le=20)] = 20,
+        limit: Annotated[
+            int, Field(default=20, ge=1, le=20, description="本次展示数量（≤20）")
+        ] = 20,
         type: Annotated[str | None, Field(default=None, description="记录类型过滤")] = None,
         category: Annotated[str | None, Field(default=None, description="分类过滤")] = None,
         from_: Annotated[str | None, Field(default=None, description="开始时间 ISO-8601")] = None,
@@ -608,12 +625,17 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
     async def habit_progress(  # pyright: ignore[reportUnusedFunction]
         mcp_ctx: Context,
         days: Annotated[int, Field(default=7, ge=7, le=31)] = 7,
+        goalId: Annotated[
+            str | None, Field(default=None, description="只查看一个习惯目标（UUID）")
+        ] = None,
         timezone: Annotated[str | None, Field(default=None, description="IANA 时区")] = None,
     ) -> object:
         return await _call_with_a2ui(
             env,
             mcp_ctx,
-            lambda ctx: tools.habit_progress(ctx, days=days, timezone_name=timezone),
+            lambda ctx: tools.habit_progress(
+                ctx, days=days, timezone_name=timezone, goal_id=goalId
+            ),
             tool_name="habit_progress",
         )
 
@@ -635,23 +657,84 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
     async def habit_goal_create(  # pyright: ignore[reportUnusedFunction]
         name: Annotated[str, Field(min_length=1, max_length=30)],
         idempotencyKey: Annotated[str, Field(min_length=8, description="客户端生成的幂等键")],
-        frequency: Annotated[Literal["daily", "weekly"], Field(default="daily")] = "daily",
+        frequency: Annotated[
+            Literal["daily", "weekly", "monthly"], Field(default="daily")
+        ] = "daily",
         unit: Annotated[str | None, Field(default=None, max_length=20)] = None,
         timesPerWeek: Annotated[int | None, Field(default=None, ge=1, le=7)] = None,
+        targetPeriod: Annotated[
+            Literal["daily", "weekly", "monthly"] | None, Field(default=None)
+        ] = None,
+        targetCount: Annotated[int | None, Field(default=None, ge=1, le=366)] = None,
         color: Annotated[str | None, Field(default=None, max_length=16)] = None,
+        reminderLocalTime: Annotated[
+            str | None,
+            Field(default=None, description="可选首次习惯提醒本地时间 YYYY-MM-DDTHH:MM[:SS]"),
+        ] = None,
+        reminderTimezone: Annotated[
+            str | None, Field(default=None, description="提醒 IANA 时区；默认账号时区")
+        ] = None,
     ) -> object:
-        return await env.call(
-            lambda ctx: tools.habit_goal_create(
+        async def create_with_optional_reminder(ctx: tools.McpCallContext) -> object:
+            result = await tools.habit_goal_create(
                 ctx,
                 name=name,
                 unit=unit,
                 frequency=frequency,
                 times_per_week=timesPerWeek,
+                target_period=targetPeriod,
+                target_count=targetCount,
                 color=color,
                 idempotency_key=idempotencyKey,
-            ),
+            )
+            if reminderLocalTime:
+                await tools.habit_reminder_create_for_goal(
+                    ctx,
+                    goal_result=result,
+                    local_date_time=reminderLocalTime,
+                    timezone_name=reminderTimezone,
+                    idempotency_key=f"{idempotencyKey}:reminder",
+                )
+            return result
+
+        return await env.call(
+            create_with_optional_reminder,
             tool_name="habit_goal_create",
             idempotency_key=idempotencyKey,
+        )
+
+    @apps.tool(
+        resource_uri=HABITS_UI_URI,
+        name="habit_goal_update",
+        description=_TOOL_DESCRIPTIONS["habit_goal_update"],
+        title="修改习惯目标",
+    )
+    async def habit_goal_update(  # pyright: ignore[reportUnusedFunction]
+        mcp_ctx: Context,
+        goalId: Annotated[str, Field(description="习惯目标 UUID")],
+        expectedRevision: Annotated[int, Field(ge=1)],
+        name: Annotated[str | None, Field(default=None, min_length=1, max_length=30)] = None,
+        unit: Annotated[str | None, Field(default=None, max_length=20)] = None,
+        targetPeriod: Annotated[
+            Literal["daily", "weekly", "monthly"] | None, Field(default=None)
+        ] = None,
+        targetCount: Annotated[int | None, Field(default=None, ge=1, le=366)] = None,
+        color: Annotated[str | None, Field(default=None, max_length=16)] = None,
+    ) -> object:
+        return await _call_with_a2ui(
+            env,
+            mcp_ctx,
+            lambda ctx: tools.habit_goal_update(
+                ctx,
+                goal_id=goalId,
+                expected_revision=expectedRevision,
+                name=name,
+                unit=unit,
+                target_period=targetPeriod,
+                target_count=targetCount,
+                color=color,
+            ),
+            tool_name="habit_goal_update",
         )
 
     @apps.tool(
@@ -817,6 +900,30 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
             ),
             tool_name="reminder_create",
             idempotency_key=idempotencyKey,
+        )
+
+
+def _register_feedback_submit(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
+        name="feedback_submit", description=_TOOL_DESCRIPTIONS["feedback_submit"], title="提交反馈"
+    )
+    async def feedback_submit(  # pyright: ignore[reportUnusedFunction]
+        kind: Annotated[
+            Literal["bug", "feature_request", "usability", "question", "other"],
+            Field(description="反馈类型"),
+        ],
+        summary: Annotated[str, Field(min_length=1, max_length=160)],
+        details: Annotated[str | None, Field(default=None, max_length=4000)] = None,
+        context: Annotated[
+            dict | None,
+            Field(default=None, description="可选功能名、场景和客户端上下文；不得放入密钥"),
+        ] = None,
+    ) -> object:
+        return await env.call(
+            lambda ctx: tools.feedback_submit(
+                ctx, kind=kind, summary=summary, details=details, context=context
+            ),
+            tool_name="feedback_submit",
         )
 
 

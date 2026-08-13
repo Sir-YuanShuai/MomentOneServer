@@ -109,7 +109,8 @@ class McpToolEnv:
                 request_id=request_id,
                 session=session,
                 account_timezone=account.timezone if account else None,
-                a2ui=a2ui_support,
+                # A2UI 是眼镜渲染通道；普通 MCP / MCP Apps 始终使用 HTML App。
+                a2ui=a2ui_support if method == "glasses" else A2UI_DISABLED,
             )
             try:
                 if policy is not None:

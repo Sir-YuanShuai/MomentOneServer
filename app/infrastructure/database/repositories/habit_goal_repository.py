@@ -18,6 +18,8 @@ def _orm_to_domain(orm: HabitGoalORM) -> HabitGoal:
         unit=orm.unit,
         frequency=orm.frequency,
         times_per_week=orm.times_per_week,
+        target_period=orm.target_period,
+        target_count=orm.target_count,
         color=orm.color,
         revision=orm.revision,
         created_at=orm.created_at,
@@ -82,6 +84,8 @@ class SqlHabitGoalRepository:
             unit=goal.unit,
             frequency=goal.frequency,
             times_per_week=goal.times_per_week,
+            target_period=goal.target_period,
+            target_count=goal.target_count,
             color=goal.color,
             revision=goal.revision,
         )
@@ -109,6 +113,10 @@ class SqlHabitGoalRepository:
             orm.frequency = fields["frequency"]
         if "times_per_week" in fields:
             orm.times_per_week = fields["times_per_week"]
+        if "target_period" in fields:
+            orm.target_period = fields["target_period"]
+        if "target_count" in fields:
+            orm.target_count = fields["target_count"]
         if "color" in fields:
             orm.color = fields["color"]
         orm.revision += 1

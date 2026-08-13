@@ -189,7 +189,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现（Casdoor isAdmin / 应用角色 / 权限归一化；暂停账号全通道阻断） |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
-| MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；通用 Moment 创建/列表/搜索/计数/详情；每日回顾；习惯目标/打卡/进度；`agent_plan`；`a2ui_action`；工具级 Scope + 审计；A2UI v0.9 自动化测试与 MomentOneGlasses 实际客户端连接 standalone 联调已通过，待真机 AIUI 页面联调后提交/部署） |
+| MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；Moment；习惯每日/每周/每月目标、修改、打卡、精确进度和关联提醒；反馈收集；设备身份级 Apps/A2UI 分流；工具级 Scope + 审计） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
 | MCP Apps UI | Server `app/modules/mcp/server.py` 轻量壳；源码/静态 bundle 位于 `MomentOneWeb/src/mcp-apps/` 与 `/mcp-apps/v1/` | 已实现 3 个紧凑结果卡：`bookkeeping` / `timeline` / `habits`；Server 不再携带或代理完整 bundle，`ui://` 壳通过 CSP 允许 Web 静态 origin；卡片只渲染本次 structuredContent |
 | A2UI over MCP | `app/modules/mcp/a2ui.py` + `contracts/a2ui/` | 已实现 Server 侧 v0.9 capability negotiation、官方 Schema/Catalog 固定、9 个紧凑结果卡 builder、校验失败文本降级与标准 Tool Result fixture；实际眼镜客户端代码 standalone 联调已通过，未提交/未部署，等待真机 AIUI 页面联调 |

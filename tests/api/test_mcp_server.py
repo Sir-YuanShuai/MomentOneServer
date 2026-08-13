@@ -555,11 +555,13 @@ async def test_mcp_list_tools_with_qr_binding_token(
         "moments_get",
         "habit_goals_list",
         "habit_goal_create",
+        "habit_goal_update",
         "habit_checkin_create",
         "habit_progress",
         "agent_plan",
         "a2ui_action",
         "reminder_create",
+        "feedback_submit",
     } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
@@ -1435,7 +1437,7 @@ async def test_a2ui_initialize_and_session_capability(
 ) -> None:
     """initialize 声明 Server 能力，Session 保存 experimental.a2ui 并影响后续结果。"""
     settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    token = _issue_glasses_token(settings, scope=("moments.read", "moments.write"))
     now = datetime.now(UTC)
     goal = HabitGoal(
         id=UUID("33333333-3333-4333-8333-333333333333"),
