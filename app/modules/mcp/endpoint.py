@@ -23,6 +23,7 @@ from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
 
 from app.core.config import Settings
+from app.infrastructure.storage.object_storage import ObjectStorageNotConfigured, get_object_storage
 from app.modules.mcp.deps import McpToolEnv
 from app.modules.mcp.server import build_mcp_server
 from app.modules.mcp.token_verifier import MomentTokenVerifier
@@ -42,7 +43,18 @@ class McpComponent:
     ) -> None:
         self.settings = settings
         self.verifier = verifier or MomentTokenVerifier(settings)
-        self.env = env or McpToolEnv()
+        if env is None:
+            try:
+                storage = get_object_storage(settings)
+            except ObjectStorageNotConfigured:
+                storage = None
+            self.env = McpToolEnv(
+                object_storage=storage,
+                max_upload_bytes=settings.max_upload_bytes,
+                upload_url_ttl_seconds=settings.s3_upload_url_ttl_seconds,
+            )
+        else:
+            self.env = env
         base = (settings.mcp_base_url or "http://127.0.0.1:8000").rstrip("/")
         # host 参数：SDK 用它决定是否启用默认 DNS rebinding 保护（仅 localhost 触发）。
         # 线上必须传真实域名（host=moment-one-api.yuanshuai.fun），否则带 token 的

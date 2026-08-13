@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -26,6 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApplicationError
 from app.infrastructure.database.models.user_feedback import UserFeedback
+from app.infrastructure.database.repositories.asset_repository import (
+    AssetRepository,
+    MomentAssetRepository,
+)
 from app.infrastructure.database.repositories.audit_event_repository import (
     SqlAuditEventRepository,
 )
@@ -47,6 +52,10 @@ from app.infrastructure.database.repositories.notification_repository import (
     ReminderRepository,
 )
 from app.infrastructure.database.repositories.user_feedback_repository import UserFeedbackRepository
+from app.infrastructure.storage.object_storage import ObjectStorage
+from app.modules.assets.domain import AssetRole, AssetState, infer_kind
+from app.modules.assets.thumbnail import THUMBNAIL_CONTENT_TYPE, generate_thumbnail
+from app.modules.entitlements.repository import EntitlementRepository
 from app.modules.habit_goals.domain import HabitGoal
 from app.modules.mcp.a2ui import A2UI_DISABLED, A2UISupport, build_a2ui_result, build_text_summary
 from app.modules.mcp.scope import has_scope
@@ -60,6 +69,21 @@ from app.modules.moments.domain import (
 from app.modules.notifications.reminders import ReminderService, serialize_reminder
 
 SCHEMA_VERSION = "1.0"
+
+
+def _generate_asset_thumbnail(storage: ObjectStorage, user_id: str, asset_id: str) -> bool:
+    data = storage.get_object_bytes(user_id=user_id, asset_id=asset_id)
+    thumbnail = generate_thumbnail(data)
+    if thumbnail is None:
+        return False
+    storage.put_thumbnail(
+        user_id=user_id,
+        asset_id=asset_id,
+        data=thumbnail,
+        content_type=THUMBNAIL_CONTENT_TYPE,
+    )
+    return True
+
 
 # bookkeeping payload 中参与幂等指纹的字段（与 REST create 的 body 语义对齐）
 _IDEMPOTENT_FIELDS = (
@@ -90,6 +114,9 @@ class McpCallContext:
     account_timezone: str | None = None
     a2ui: A2UISupport = A2UI_DISABLED
     available_tools: frozenset[str] | None = None
+    object_storage: ObjectStorage | None = None
+    max_upload_bytes: int = 20 * 1024 * 1024
+    upload_url_ttl_seconds: int = 600
 
     def require_scope(self, required: str) -> None:
         if not has_scope(self.scopes, required):
@@ -422,6 +449,7 @@ async def bookkeeping_create(
     count_in_budget: bool | None,
     idempotency_key: str | None,
     title: str | None,
+    asset_ids: list[str] | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.write")
 
@@ -469,6 +497,7 @@ async def bookkeeping_create(
                 "method": method,
                 "countInFlow": count_in_flow,
                 "countInBudget": count_in_budget,
+                "assetIds": asset_ids or [],
             }.items()
             if v is not None
         }
@@ -519,6 +548,7 @@ async def bookkeeping_create(
 
     repo = PostgresMomentRepository(ctx.session)
     created = await repo.create(moment)
+    media = await _attach_ready_assets(ctx, created.id, asset_ids)
 
     response = {
         "schemaVersion": SCHEMA_VERSION,
@@ -534,6 +564,7 @@ async def bookkeeping_create(
         "revision": created.revision,
         "created": True,
         "replayed": False,
+        "media": media,
     }
 
     # 版本快照
@@ -1043,6 +1074,7 @@ async def _create_typed_moment(
     payload: dict | None,
     idempotency_key: str,
     operation: str,
+    asset_ids: list[str] | None = None,
 ) -> tuple[Moment, bool]:
     resolved_title = title.strip()
     if not resolved_title or len(resolved_title) > 20:
@@ -1101,6 +1133,7 @@ async def _create_typed_moment(
         "timezone": timezone_name,
         "type": moment_type,
         "payload": resolved_payload,
+        "assetIds": asset_ids or [],
     }
     idem_repo = SqlIdempotencyRepository(ctx.session)
     request_fp = fingerprint_payload(request_body)
@@ -1151,7 +1184,8 @@ async def _create_typed_moment(
         payload=resolved_payload,
     )
     created = await PostgresMomentRepository(ctx.session).create(moment)
-    response = _moment_item(created, detail=True)
+    media = await _attach_ready_assets(ctx, created.id, asset_ids)
+    response = {**_moment_item(created, detail=True), "media": media}
     await SqlMomentRevisionRepository(ctx.session).append(
         user_id=created.user_id,
         moment_id=created.id,
@@ -1169,6 +1203,249 @@ async def _create_typed_moment(
     return created, False
 
 
+async def _attach_ready_assets(
+    ctx: McpCallContext, moment_id: UUID, asset_ids: list[str] | None
+) -> list[dict]:
+    if not asset_ids:
+        return []
+    if len(asset_ids) > 10 or len(asset_ids) != len(set(asset_ids)):
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS",
+            message="assetIds 最多 10 个且不能重复。",
+            status_code=400,
+        )
+    assets = AssetRepository(ctx.session)
+    links = MomentAssetRepository(ctx.session)
+    media: list[dict] = []
+    for position, raw_id in enumerate(asset_ids):
+        try:
+            asset_id = UUID(raw_id)
+        except (ValueError, TypeError) as exc:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS", message=f"assetId 格式无效：{raw_id}", status_code=400
+            ) from exc
+        asset = await assets.get_by_id(asset_id, ctx.user_id)
+        if asset is None:
+            raise ApplicationError(
+                code="ASSET_NOT_FOUND", message="附件不存在或不属于当前用户。", status_code=404
+            )
+        if asset.state != AssetState.READY:
+            raise ApplicationError(
+                code="MEDIA_NOT_READY", message=f"附件 {raw_id} 尚未上传完成。", status_code=409
+            )
+        await links.attach(
+            user_id=ctx.user_id,
+            moment_id=moment_id,
+            asset_id=asset.id,
+            position=position,
+            role=AssetRole.ORIGINAL,
+        )
+        media.append(
+            {
+                "assetId": str(asset.id),
+                "kind": asset.kind.value,
+                "contentType": asset.content_type,
+                "sizeBytes": asset.size_bytes,
+            }
+        )
+    return media
+
+
+async def asset_upload_intent_create(
+    ctx: McpCallContext, *, content_type: str, size_bytes: int, idempotency_key: str
+) -> CallToolResult:
+    """签发短期直传 URL；Tool 不接收文件字节或任意远程 URL。"""
+    ctx.require_scope("moments.write")
+    kind = infer_kind(content_type)
+    if kind is None:
+        raise ApplicationError(
+            code="MEDIA_TYPE_NOT_ALLOWED",
+            message=f"不支持的媒体类型：{content_type}",
+            status_code=415,
+        )
+    if ctx.object_storage is None:
+        raise ApplicationError(
+            code="SERVICE_UNAVAILABLE", message="对象存储未配置。", status_code=503
+        )
+    entitlements = EntitlementRepository(ctx.session)
+    plan_limit = await entitlements.max_upload_bytes(ctx.user_id)
+    limit = min(ctx.max_upload_bytes, plan_limit or ctx.max_upload_bytes)
+    if size_bytes <= 0 or size_bytes > limit:
+        raise ApplicationError(
+            code="MEDIA_TOO_LARGE",
+            message=f"文件大小必须在 1~{limit} 字节。",
+            status_code=413,
+            details={"maxUploadBytes": limit},
+        )
+    request_body = {"contentType": content_type, "sizeBytes": size_bytes}
+    idem_repo = SqlIdempotencyRepository(ctx.session)
+    idem_record = await idem_repo.acquire(
+        user_id=ctx.user_id,
+        operation="asset_upload_intent_create",
+        idempotency_key=idempotency_key,
+        request_payload=request_body,
+    )
+    if idem_record.request_fingerprint != fingerprint_payload(request_body):
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="idempotencyKey 已用于不同的上传申请。",
+            status_code=409,
+        )
+    if idem_record.state == "completed" and idem_record.resource_id is not None:
+        existing = await AssetRepository(ctx.session).get_by_id(
+            idem_record.resource_id, ctx.user_id
+        )
+        if existing is not None and existing.state == AssetState.UPLOADING:
+            intent = ctx.object_storage.create_upload_intent(
+                user_id=str(ctx.user_id),
+                asset_id=str(existing.id),
+                content_type=existing.content_type,
+                size_bytes=existing.size_bytes or size_bytes,
+                expires_in_seconds=ctx.upload_url_ttl_seconds,
+            )
+            return _text_result(
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "assetId": str(existing.id),
+                    "state": "uploading",
+                    "replayed": True,
+                    "upload": {
+                        "method": intent.method,
+                        "url": intent.url,
+                        "headers": intent.headers,
+                        "expiresIn": intent.expires_in_seconds,
+                    },
+                    "nextTool": "asset_upload_complete",
+                }
+            )
+    await entitlements.reserve_upload(ctx.user_id, size_bytes)
+    asset = await AssetRepository(ctx.session).create(
+        user_id=ctx.user_id,
+        kind=kind,
+        content_type=content_type,
+        size_bytes=size_bytes,
+    )
+    intent = ctx.object_storage.create_upload_intent(
+        user_id=str(ctx.user_id),
+        asset_id=str(asset.id),
+        content_type=content_type,
+        size_bytes=size_bytes,
+        expires_in_seconds=ctx.upload_url_ttl_seconds,
+    )
+    await _append_tool_audit(
+        ctx,
+        tool="asset_upload_intent_create",
+        resource_id=asset.id,
+        metadata={"contentType": content_type, "sizeBytes": size_bytes},
+    )
+    response = {
+        "schemaVersion": SCHEMA_VERSION,
+        "assetId": str(asset.id),
+        "state": "uploading",
+        "replayed": False,
+        "upload": {
+            "method": intent.method,
+            "url": intent.url,
+            "headers": intent.headers,
+            "expiresIn": intent.expires_in_seconds,
+        },
+        "nextTool": "asset_upload_complete",
+    }
+    await idem_repo.complete(
+        record_id=idem_record.id,
+        response_status=201,
+        response_body=response,
+        resource_id=asset.id,
+    )
+    return _text_result(response)
+
+
+async def asset_upload_complete(
+    ctx: McpCallContext, *, asset_id: str, checksum_sha256: str | None
+) -> CallToolResult:
+    ctx.require_scope("moments.write")
+    if ctx.object_storage is None:
+        raise ApplicationError(
+            code="SERVICE_UNAVAILABLE", message="对象存储未配置。", status_code=503
+        )
+    try:
+        parsed_id = UUID(asset_id)
+    except ValueError as exc:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="assetId 不是合法 UUID。", status_code=400
+        ) from exc
+    repo = AssetRepository(ctx.session)
+    asset = await repo.get_by_id(parsed_id, ctx.user_id)
+    if asset is None:
+        raise ApplicationError(
+            code="ASSET_NOT_FOUND", message="附件不存在或不属于当前用户。", status_code=404
+        )
+    if asset.state == AssetState.READY:
+        return _text_result(
+            {
+                "schemaVersion": SCHEMA_VERSION,
+                "assetId": asset_id,
+                "state": "ready",
+                "kind": asset.kind.value,
+                "contentType": asset.content_type,
+                "sizeBytes": asset.size_bytes,
+            }
+        )
+    if asset.state != AssetState.UPLOADING:
+        raise ApplicationError(
+            code="INVALID_ARGUMENTS", message="当前附件状态不能完成上传。", status_code=409
+        )
+    reserved = asset.size_bytes or 0
+    try:
+        meta = ctx.object_storage.head_object(user_id=str(ctx.user_id), asset_id=asset_id)
+    except Exception as exc:
+        raise ApplicationError(
+            code="MEDIA_NOT_READY", message="尚未在对象存储中找到上传文件。", status_code=422
+        ) from exc
+    if (
+        meta.size_bytes <= 0
+        or meta.size_bytes > reserved
+        or meta.content_type != asset.content_type
+    ):
+        await repo.mark_failed(parsed_id, ctx.user_id)
+        await EntitlementRepository(ctx.session).release_upload(
+            ctx.user_id, reserved_bytes=reserved
+        )
+        return err_result(
+            "MEDIA_UPLOAD_MISMATCH",
+            "上传文件与申请的大小或类型不一致。",
+            {"expectedContentType": asset.content_type, "maxSizeBytes": reserved},
+        )
+    ready = await repo.mark_ready(
+        parsed_id, ctx.user_id, size_bytes=meta.size_bytes, checksum_sha256=checksum_sha256
+    )
+    assert ready is not None
+    await EntitlementRepository(ctx.session).complete_upload(
+        ctx.user_id, reserved_bytes=reserved, actual_bytes=meta.size_bytes
+    )
+    if ready.kind.value == "image":
+        try:
+            generated = await asyncio.to_thread(
+                _generate_asset_thumbnail, ctx.object_storage, str(ctx.user_id), asset_id
+            )
+            if generated:
+                await repo.mark_thumbnail_ready(parsed_id, ctx.user_id)
+        except Exception:
+            pass
+    await _append_tool_audit(ctx, tool="asset_upload_complete", resource_id=parsed_id)
+    return _text_result(
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "assetId": asset_id,
+            "state": "ready",
+            "kind": ready.kind.value,
+            "contentType": ready.content_type,
+            "sizeBytes": ready.size_bytes,
+            "usableBy": ["moments_create", "habit_checkin_create", "bookkeeping_create"],
+        }
+    )
+
+
 async def moments_create(
     ctx: McpCallContext,
     *,
@@ -1184,6 +1461,7 @@ async def moments_create(
     moment_type: str,
     payload: dict | None,
     idempotency_key: str,
+    asset_ids: list[str] | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.write")
     created, replayed = await _create_typed_moment(
@@ -1201,6 +1479,7 @@ async def moments_create(
         payload=payload,
         idempotency_key=idempotency_key,
         operation="moments_create",
+        asset_ids=asset_ids,
     )
     result = {
         "schemaVersion": SCHEMA_VERSION,
@@ -1697,6 +1976,7 @@ async def habit_checkin_create(
     timezone_name: str,
     note: str | None,
     idempotency_key: str,
+    asset_ids: list[str] | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.write")
     try:
@@ -1736,6 +2016,7 @@ async def habit_checkin_create(
         payload=payload,
         idempotency_key=idempotency_key,
         operation="habit_checkin_create",
+        asset_ids=asset_ids,
     )
     await _append_tool_audit(
         ctx,
@@ -2250,6 +2531,8 @@ __all__ = [
     "habit_goal_update",
     "habit_checkin_create",
     "habit_progress",
+    "asset_upload_intent_create",
+    "asset_upload_complete",
     "feedback_submit",
     "reminder_create",
     "agent_plan",
