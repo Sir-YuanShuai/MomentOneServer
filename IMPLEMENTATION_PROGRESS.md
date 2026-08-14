@@ -202,6 +202,14 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |
 | PWA Web Push | `app/modules/notifications/` + `app/api/routes/push.py` + `app/api/routes/reminders.py` + `app/api/routes/notifications.py` | 第五批已实现：订阅生命周期、多终端投递、Reminder API、事务 Outbox、`SKIP LOCKED` Worker、重试、站内通知、全部已读、逐终端审计、服务端偏好、类别投递策略，以及新登录、新 MCP 授权和新眼镜绑定安全通知；习惯周期调度待后续阶段 |
 
+## MCP Apps 独立资源与输出契约（2026-08-14）
+
+- [x] 19 个普通 MCP Tool 与 19 个唯一 `ui://moment-one/tools/{tool_name}` HTML 壳一一绑定
+- [x] 记账、时间线、习惯和通用工具复用四个 Web/CDN 渲染内核，Server 仅提供轻量启动壳
+- [x] 19 个工具全部提供标准 `outputSchema`，覆盖成功结构与 `structuredContent.error` 失败结构
+- [x] `tools/list`、资源枚举/读取、真实成功与错误调用均有契约测试
+- [x] 眼镜专用 `bookkeeping_plan`、`agent_plan`、`a2ui_action` 保持 A2UI 边界，不绑定 HTML Apps
+
 ## 未实现的目标表
 
 按 [STORAGE_DATA_MODEL.md](./docs/data/STORAGE_DATA_MODEL.md) 分阶段：

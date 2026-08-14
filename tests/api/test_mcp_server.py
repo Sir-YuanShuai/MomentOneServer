@@ -35,6 +35,7 @@ from app.modules.mcp.a2ui import (
 )
 from app.modules.mcp.deps import McpToolEnv
 from app.modules.mcp.endpoint import McpComponent
+from app.modules.mcp.server import MCP_APP_TOOL_SPECS, tool_ui_uri
 from app.modules.mcp.token_verifier import MomentTokenVerifier
 from app.modules.mcp_oauth.service import derive_code_challenge, generate_code_verifier
 from app.modules.moments.domain import Moment
@@ -589,30 +590,16 @@ async def test_mcp_list_tools_with_qr_binding_token(
     assert {"remindAt", "localDateTime", "afterMinutes", "timezone", "dueAt"} <= set(
         reminder["inputSchema"]["properties"]
     )
-    list_tool = next(t for t in tools if t["name"] == "bookkeeping_list")
-    assert (
-        list_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == "ui://moment-one/bookkeeping"
-    )
-    timeline_tool = next(t for t in tools if t["name"] == "moments_list")
-    assert timeline_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
-        "ui://moment-one/timeline"
-    )
-    habit_tool = next(t for t in tools if t["name"] == "habit_progress")
-    assert habit_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
-        "ui://moment-one/habits"
-    )
-    for utility_tool_name in (
-        "moments_count",
-        "account_entitlements",
-        "reminder_create",
-        "feedback_submit",
-        "asset_upload_intent_create",
-        "asset_upload_complete",
-    ):
-        utility_tool = next(t for t in tools if t["name"] == utility_tool_name)
-        assert utility_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
-            "ui://moment-one/utility"
-        )
+    tool_map = {tool["name"]: tool for tool in tools}
+    app_resource_uris = {
+        tool_map[name].get("_meta", {}).get("ui", {}).get("resourceUri")
+        for name in MCP_APP_TOOL_SPECS
+    }
+    assert app_resource_uris == {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS}
+    assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 19
+    for tool_name in MCP_APP_TOOL_SPECS:
+        assert tool_map[tool_name]["outputSchema"]["type"] == "object"
+        assert tool_map[tool_name]["outputSchema"].get("properties")
 
 
 @pytest.mark.asyncio
@@ -1028,16 +1015,12 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
                 "jsonrpc": "2.0",
                 "id": 51,
                 "method": "resources/read",
-                "params": {"uri": "ui://moment-one/bookkeeping"},
+                "params": {"uri": tool_ui_uri("bookkeeping_create")},
             },
         )
     uris = {resource["uri"] for resource in data["result"]["resources"]}
-    assert {
-        "ui://moment-one/bookkeeping",
-        "ui://moment-one/timeline",
-        "ui://moment-one/habits",
-        "ui://moment-one/utility",
-    } <= uris
+    assert {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS} <= uris
+    assert len({uri for uri in uris if uri.startswith("ui://moment-one/tools/")}) == 19
     content = resource["result"]["contents"][0]
     assert content["mimeType"] == "text/html;profile=mcp-app"
     assert "https://web.example.test/mcp-apps/test-v1/assets/bookkeeping.js" in content["text"]

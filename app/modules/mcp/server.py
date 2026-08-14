@@ -3,7 +3,7 @@
 - Streamable HTTP（`POST /mcp`，挂载见 application.py）
 - Bearer 鉴权由 `BearerAuthBackend(MomentTokenVerifier)` + `RequireAuthMiddleware` 处理
 - 工具：记账 + 通用 Moment + 每日回顾 + 习惯目标/打卡
-- MCP Apps：记账、记忆时间线、习惯追踪、通用操作四套交互 UI
+- MCP Apps：每个普通工具拥有独立 ui:// 壳，同业务域复用渲染内核
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from urllib.parse import urlparse
 
 from mcp.server.apps import Apps, ResourceCsp
@@ -20,6 +20,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import Field
 
+from app.modules.mcp import output_schemas as output
 from app.modules.mcp import tools
 from app.modules.mcp.a2ui import A2UIExtension, negotiate_a2ui
 from app.modules.mcp.deps import McpToolEnv
@@ -27,10 +28,34 @@ from app.modules.mcp.quota_middleware import McpToolVisibilityMiddleware
 
 logger = logging.getLogger(__name__)
 
-BOOKKEEPING_UI_URI = "ui://moment-one/bookkeeping"
-TIMELINE_UI_URI = "ui://moment-one/timeline"
-HABITS_UI_URI = "ui://moment-one/habits"
-UTILITY_UI_URI = "ui://moment-one/utility"
+MCP_APP_TOOL_SPECS: dict[str, tuple[str, str]] = {
+    "bookkeeping_create": ("bookkeeping", "记账成功"),
+    "bookkeeping_list": ("bookkeeping", "账目明细"),
+    "bookkeeping_summary": ("bookkeeping", "收支概览"),
+    "moments_create": ("timeline", "记录成功"),
+    "moments_list": ("timeline", "最近的 Moment"),
+    "moments_search": ("timeline", "搜索结果"),
+    "moments_get": ("timeline", "Moment 详情"),
+    "reviews_daily": ("timeline", "每日回顾"),
+    "habit_goals_list": ("habits", "习惯目标"),
+    "habit_goal_create": ("habits", "习惯已创建"),
+    "habit_goal_update": ("habits", "习惯已更新"),
+    "habit_checkin_create": ("habits", "打卡已记录"),
+    "habit_progress": ("habits", "习惯进度"),
+    "moments_count": ("utility", "Moment 统计"),
+    "account_entitlements": ("utility", "账号额度"),
+    "reminder_create": ("utility", "提醒已创建"),
+    "feedback_submit": ("utility", "反馈已收到"),
+    "asset_upload_intent_create": ("utility", "可以上传附件"),
+    "asset_upload_complete": ("utility", "附件已就绪"),
+}
+
+
+def tool_ui_uri(tool_name: str) -> str:
+    """普通 MCP Tool 与独立 Apps 资源的一对一稳定映射。"""
+    if tool_name not in MCP_APP_TOOL_SPECS:
+        raise KeyError(f"未注册 MCP App UI 的工具：{tool_name}")
+    return f"ui://moment-one/tools/{tool_name}"
 
 
 # MCP Apps 轻量启动壳；业务结果始终另有 content 文本降级。
@@ -178,42 +203,17 @@ def build_mcp_server(
         raise ValueError("MCP Apps asset base URL 必须是带 origin 的 HTTP(S) URL")
     resource_origin = f"{parsed_asset_root.scheme}://{parsed_asset_root.netloc}"
     csp = ResourceCsp(resource_domains=[resource_origin])
-    apps.add_html_resource(
-        BOOKKEEPING_UI_URI,
-        _app_shell(f"{asset_root}/assets/bookkeeping.js", "Moment One 记账"),
-        name="Moment One 记账",
-        title="记账",
-        description="记账记录列表 + 收支统计（ui://moment-one/bookkeeping）",
-        csp=csp,
-        domain=resource_origin,
-    )
-    apps.add_html_resource(
-        TIMELINE_UI_URI,
-        _app_shell(f"{asset_root}/assets/timeline.js", "Moment One 时间线"),
-        name="Moment One 记忆时间线",
-        title="记忆时间线",
-        description="时间线、搜索、详情和每日回顾（ui://moment-one/timeline）",
-        csp=csp,
-        domain=resource_origin,
-    )
-    apps.add_html_resource(
-        HABITS_UI_URI,
-        _app_shell(f"{asset_root}/assets/habits.js", "Moment One 习惯"),
-        name="Moment One 习惯",
-        title="习惯追踪",
-        description="习惯目标、七日进度与快捷打卡（ui://moment-one/habits）",
-        csp=csp,
-        domain=resource_origin,
-    )
-    apps.add_html_resource(
-        UTILITY_UI_URI,
-        _app_shell(f"{asset_root}/assets/utility.js", "Moment One 操作结果"),
-        name="Moment One 操作结果",
-        title="操作结果",
-        description="统计、额度、提醒、反馈和附件状态（ui://moment-one/utility）",
-        csp=csp,
-        domain=resource_origin,
-    )
+    for tool_name, (renderer, title) in MCP_APP_TOOL_SPECS.items():
+        resource_uri = tool_ui_uri(tool_name)
+        apps.add_html_resource(
+            resource_uri,
+            _app_shell(f"{asset_root}/assets/{renderer}.js", f"Moment One · {title}"),
+            name=f"Moment One · {tool_name}",
+            title=title,
+            description=f"{tool_name} 的独立返回 UI（{resource_uri}）",
+            csp=csp,
+            domain=resource_origin,
+        )
 
     server = MCPServer(
         name="moment-one-mcp",
@@ -286,7 +286,7 @@ def _register_bookkeeping_prompt(server: MCPServer) -> None:
 
 def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=BOOKKEEPING_UI_URI,
+        resource_uri=tool_ui_uri("bookkeeping_create"),
         name="bookkeeping_create",
         description=_TOOL_DESCRIPTIONS["bookkeeping_create"],
         title="记一笔账",
@@ -349,30 +349,33 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
             list[str] | None,
             Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
         ] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.bookkeeping_create(
-                ctx,
-                amount=amount,
-                flow=flow,
-                occurred_at=occurredAt,
-                occurred_local_date_time=occurredLocalDateTime,
-                timezone_name=timezone,
-                account=account,
-                category=category,
-                merchant=merchant,
-                ledger=ledger,
-                method=method,
-                count_in_flow=countInFlow,
-                count_in_budget=countInBudget,
+    ) -> output.BookkeepingCreateOutput:
+        return cast(
+            output.BookkeepingCreateOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.bookkeeping_create(
+                    ctx,
+                    amount=amount,
+                    flow=flow,
+                    occurred_at=occurredAt,
+                    occurred_local_date_time=occurredLocalDateTime,
+                    timezone_name=timezone,
+                    account=account,
+                    category=category,
+                    merchant=merchant,
+                    ledger=ledger,
+                    method=method,
+                    count_in_flow=countInFlow,
+                    count_in_budget=countInBudget,
+                    idempotency_key=idempotencyKey,
+                    title=title,
+                    asset_ids=assetIds,
+                ),
+                tool_name="bookkeeping_create",
                 idempotency_key=idempotencyKey,
-                title=title,
-                asset_ids=assetIds,
             ),
-            tool_name="bookkeeping_create",
-            idempotency_key=idempotencyKey,
         )
 
 
@@ -383,7 +386,7 @@ def _register_bookkeeping_create(apps: Apps, env: McpToolEnv) -> None:
 
 def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=BOOKKEEPING_UI_URI,
+        resource_uri=tool_ui_uri("bookkeeping_list"),
         name="bookkeeping_list",
         description=_TOOL_DESCRIPTIONS["bookkeeping_list"],
         title="记账记录列表",
@@ -404,20 +407,23 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
         ledger: Annotated[
             str | None, Field(default=None, description="按账本过滤（payload.ledger）")
         ] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.bookkeeping_list(
-                ctx,
-                limit=limit,
-                cursor=cursor,
-                from_=from_,
-                to=to,
-                category=category,
-                ledger=ledger,
+    ) -> output.BookkeepingListOutput:
+        return cast(
+            output.BookkeepingListOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.bookkeeping_list(
+                    ctx,
+                    limit=limit,
+                    cursor=cursor,
+                    from_=from_,
+                    to=to,
+                    category=category,
+                    ledger=ledger,
+                ),
+                tool_name="bookkeeping_list",
             ),
-            tool_name="bookkeeping_list",
         )
 
 
@@ -428,7 +434,7 @@ def _register_bookkeeping_list(apps: Apps, env: McpToolEnv) -> None:
 
 def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=BOOKKEEPING_UI_URI,
+        resource_uri=tool_ui_uri("bookkeeping_summary"),
         name="bookkeeping_summary",
         description=_TOOL_DESCRIPTIONS["bookkeeping_summary"],
         title="记账统计",
@@ -461,21 +467,24 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
             str | None,
             Field(default=None, description="自定义范围结束（ISO-8601，开区间）"),
         ] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.bookkeeping_summary(
-                ctx,
-                period=period,
-                year=year,
-                month=month,
-                ledger=ledger,
-                category=category,
-                from_=from_,
-                to=to,
+    ) -> output.BookkeepingSummaryOutput:
+        return cast(
+            output.BookkeepingSummaryOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.bookkeeping_summary(
+                    ctx,
+                    period=period,
+                    year=year,
+                    month=month,
+                    ledger=ledger,
+                    category=category,
+                    from_=from_,
+                    to=to,
+                ),
+                tool_name="bookkeeping_summary",
             ),
-            tool_name="bookkeeping_summary",
         )
 
 
@@ -486,7 +495,7 @@ def _register_bookkeeping_summary(apps: Apps, env: McpToolEnv) -> None:
 
 def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=TIMELINE_UI_URI,
+        resource_uri=tool_ui_uri("moments_list"),
         name="moments_list",
         description=_TOOL_DESCRIPTIONS["moments_list"],
         title="浏览记忆时间线",
@@ -504,25 +513,28 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         tag: Annotated[str | None, Field(default=None, description="标签")] = None,
         from_: Annotated[str | None, Field(default=None, description="开始时间 ISO-8601")] = None,
         to: Annotated[str | None, Field(default=None, description="结束时间 ISO-8601")] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.moments_list(
-                ctx,
-                limit=limit,
-                cursor=cursor,
-                moment_type=type,
-                category=category,
-                tag=tag,
-                from_=from_,
-                to=to,
+    ) -> output.MomentListOutput:
+        return cast(
+            output.MomentListOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.moments_list(
+                    ctx,
+                    limit=limit,
+                    cursor=cursor,
+                    moment_type=type,
+                    category=category,
+                    tag=tag,
+                    from_=from_,
+                    to=to,
+                ),
+                tool_name="moments_list",
             ),
-            tool_name="moments_list",
         )
 
     @apps.tool(
-        resource_uri=TIMELINE_UI_URI,
+        resource_uri=tool_ui_uri("moments_search"),
         name="moments_search",
         description=_TOOL_DESCRIPTIONS["moments_search"],
         title="搜索记忆",
@@ -537,24 +549,27 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         category: Annotated[str | None, Field(default=None, description="分类过滤")] = None,
         from_: Annotated[str | None, Field(default=None, description="开始时间 ISO-8601")] = None,
         to: Annotated[str | None, Field(default=None, description="结束时间 ISO-8601")] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.moments_search(
-                ctx,
-                query=query,
-                limit=limit,
-                moment_type=type,
-                category=category,
-                from_=from_,
-                to=to,
+    ) -> output.MomentSearchOutput:
+        return cast(
+            output.MomentSearchOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.moments_search(
+                    ctx,
+                    query=query,
+                    limit=limit,
+                    moment_type=type,
+                    category=category,
+                    from_=from_,
+                    to=to,
+                ),
+                tool_name="moments_search",
             ),
-            tool_name="moments_search",
         )
 
     @apps.tool(
-        resource_uri=TIMELINE_UI_URI,
+        resource_uri=tool_ui_uri("reviews_daily"),
         name="reviews_daily",
         description=_TOOL_DESCRIPTIONS["reviews_daily"],
         title="每日回顾",
@@ -567,16 +582,19 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
         timezone: Annotated[
             str | None, Field(default=None, description="IANA 时区，如 Asia/Shanghai")
         ] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone),
-            tool_name="reviews_daily",
+    ) -> output.DailyReviewOutput:
+        return cast(
+            output.DailyReviewOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.reviews_daily(ctx, day=date, timezone_name=timezone),
+                tool_name="reviews_daily",
+            ),
         )
 
     @apps.tool(
-        resource_uri=TIMELINE_UI_URI,
+        resource_uri=tool_ui_uri("moments_get"),
         name="moments_get",
         description=_TOOL_DESCRIPTIONS["moments_get"],
         title="查看 Moment 详情",
@@ -584,16 +602,19 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
     async def moments_get(  # pyright: ignore[reportUnusedFunction]
         mcp_ctx: Context,
         momentId: Annotated[str, Field(description="Moment ID（UUID）")],
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.moments_get(ctx, moment_id=momentId),
-            tool_name="moments_get",
+    ) -> output.MomentGetOutput:
+        return cast(
+            output.MomentGetOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.moments_get(ctx, moment_id=momentId),
+                tool_name="moments_get",
+            ),
         )
 
     @apps.tool(
-        resource_uri=TIMELINE_UI_URI,
+        resource_uri=tool_ui_uri("moments_create"),
         name="moments_create",
         description=_TOOL_DESCRIPTIONS["moments_create"],
         title="记录一个 Moment",
@@ -628,32 +649,35 @@ def _register_moment_app_tools(apps: Apps, env: McpToolEnv) -> None:
             list[str] | None,
             Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
         ] = None,
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.moments_create(
-                ctx,
-                title=title,
-                description=description,
-                category=category,
-                tags=tags,
-                persons=persons,
-                event=event,
-                occurred_at=occurredAt,
-                occurred_local_date_time=occurredLocalDateTime,
-                timezone_name=timezone,
-                moment_type=type,
-                payload=payload,
+    ) -> output.MomentCreateOutput:
+        return cast(
+            output.MomentCreateOutput,
+            await env.call(
+                lambda ctx: tools.moments_create(
+                    ctx,
+                    title=title,
+                    description=description,
+                    category=category,
+                    tags=tags,
+                    persons=persons,
+                    event=event,
+                    occurred_at=occurredAt,
+                    occurred_local_date_time=occurredLocalDateTime,
+                    timezone_name=timezone,
+                    moment_type=type,
+                    payload=payload,
+                    idempotency_key=idempotencyKey,
+                    asset_ids=assetIds,
+                ),
+                tool_name="moments_create",
                 idempotency_key=idempotencyKey,
-                asset_ids=assetIds,
             ),
-            tool_name="moments_create",
-            idempotency_key=idempotencyKey,
         )
 
 
 def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=HABITS_UI_URI,
+        resource_uri=tool_ui_uri("habit_progress"),
         name="habit_progress",
         description=_TOOL_DESCRIPTIONS["habit_progress"],
         title="查看习惯进度",
@@ -665,27 +689,33 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
             str | None, Field(default=None, description="只查看一个习惯目标（UUID）")
         ] = None,
         timezone: Annotated[str | None, Field(default=None, description="IANA 时区")] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.habit_progress(
-                ctx, days=days, timezone_name=timezone, goal_id=goalId
+    ) -> output.HabitProgressOutput:
+        return cast(
+            output.HabitProgressOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.habit_progress(
+                    ctx, days=days, timezone_name=timezone, goal_id=goalId
+                ),
+                tool_name="habit_progress",
             ),
-            tool_name="habit_progress",
         )
 
     @apps.tool(
-        resource_uri=HABITS_UI_URI,
+        resource_uri=tool_ui_uri("habit_goals_list"),
         name="habit_goals_list",
         description=_TOOL_DESCRIPTIONS["habit_goals_list"],
         title="习惯目标列表",
     )
-    async def habit_goals_list() -> object:  # pyright: ignore[reportUnusedFunction]
-        return await env.call(tools.habit_goals_list, tool_name="habit_goals_list")
+    async def habit_goals_list() -> output.HabitGoalsListOutput:  # pyright: ignore[reportUnusedFunction]
+        return cast(
+            output.HabitGoalsListOutput,
+            await env.call(tools.habit_goals_list, tool_name="habit_goals_list"),
+        )
 
     @apps.tool(
-        resource_uri=HABITS_UI_URI,
+        resource_uri=tool_ui_uri("habit_goal_create"),
         name="habit_goal_create",
         description=_TOOL_DESCRIPTIONS["habit_goal_create"],
         title="创建习惯目标",
@@ -710,7 +740,7 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         reminderTimezone: Annotated[
             str | None, Field(default=None, description="提醒 IANA 时区；默认账号时区")
         ] = None,
-    ) -> object:
+    ) -> output.HabitGoalCreateOutput:
         async def create_with_optional_reminder(ctx: tools.McpCallContext) -> object:
             result = await tools.habit_goal_create(
                 ctx,
@@ -733,14 +763,17 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
                 )
             return result
 
-        return await env.call(
-            create_with_optional_reminder,
-            tool_name="habit_goal_create",
-            idempotency_key=idempotencyKey,
+        return cast(
+            output.HabitGoalCreateOutput,
+            await env.call(
+                create_with_optional_reminder,
+                tool_name="habit_goal_create",
+                idempotency_key=idempotencyKey,
+            ),
         )
 
     @apps.tool(
-        resource_uri=HABITS_UI_URI,
+        resource_uri=tool_ui_uri("habit_goal_update"),
         name="habit_goal_update",
         description=_TOOL_DESCRIPTIONS["habit_goal_update"],
         title="修改习惯目标",
@@ -756,25 +789,28 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         ] = None,
         targetCount: Annotated[int | None, Field(default=None, ge=1, le=366)] = None,
         color: Annotated[str | None, Field(default=None, max_length=16)] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.habit_goal_update(
-                ctx,
-                goal_id=goalId,
-                expected_revision=expectedRevision,
-                name=name,
-                unit=unit,
-                target_period=targetPeriod,
-                target_count=targetCount,
-                color=color,
+    ) -> output.HabitGoalUpdateOutput:
+        return cast(
+            output.HabitGoalUpdateOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.habit_goal_update(
+                    ctx,
+                    goal_id=goalId,
+                    expected_revision=expectedRevision,
+                    name=name,
+                    unit=unit,
+                    target_period=targetPeriod,
+                    target_count=targetCount,
+                    color=color,
+                ),
+                tool_name="habit_goal_update",
             ),
-            tool_name="habit_goal_update",
         )
 
     @apps.tool(
-        resource_uri=HABITS_UI_URI,
+        resource_uri=tool_ui_uri("habit_checkin_create"),
         name="habit_checkin_create",
         description=_TOOL_DESCRIPTIONS["habit_checkin_create"],
         title="习惯打卡",
@@ -792,29 +828,32 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
             list[str] | None,
             Field(default=None, max_length=10, description="已 ready 的当前用户附件 UUID"),
         ] = None,
-    ) -> object:
-        return await _call_with_a2ui(
-            env,
-            mcp_ctx,
-            lambda ctx: tools.habit_checkin_create(
-                ctx,
-                goal_id=goalId,
-                done=done,
-                count=count,
-                occurred_at=occurredAt,
-                timezone_name=timezone,
-                note=note,
+    ) -> output.HabitCheckinOutput:
+        return cast(
+            output.HabitCheckinOutput,
+            await _call_with_a2ui(
+                env,
+                mcp_ctx,
+                lambda ctx: tools.habit_checkin_create(
+                    ctx,
+                    goal_id=goalId,
+                    done=done,
+                    count=count,
+                    occurred_at=occurredAt,
+                    timezone_name=timezone,
+                    note=note,
+                    idempotency_key=idempotencyKey,
+                    asset_ids=assetIds,
+                ),
+                tool_name="habit_checkin_create",
                 idempotency_key=idempotencyKey,
-                asset_ids=assetIds,
             ),
-            tool_name="habit_checkin_create",
-            idempotency_key=idempotencyKey,
         )
 
 
 def _register_moments_count(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("moments_count"),
         name="moments_count",
         description=_TOOL_DESCRIPTIONS["moments_count"],
         title="统计 Moment 数量",
@@ -824,16 +863,19 @@ def _register_moments_count(apps: Apps, env: McpToolEnv) -> None:
         category: Annotated[str | None, Field(default=None)] = None,
         from_: Annotated[str | None, Field(default=None)] = None,
         to: Annotated[str | None, Field(default=None)] = None,
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.moments_count(
-                ctx,
-                moment_type=type,
-                category=category,
-                from_=from_,
-                to=to,
+    ) -> output.MomentCountOutput:
+        return cast(
+            output.MomentCountOutput,
+            await env.call(
+                lambda ctx: tools.moments_count(
+                    ctx,
+                    moment_type=type,
+                    category=category,
+                    from_=from_,
+                    to=to,
+                ),
+                tool_name="moments_count",
             ),
-            tool_name="moments_count",
         )
 
 
@@ -887,21 +929,24 @@ def _register_a2ui_action(server: MCPServer, env: McpToolEnv) -> None:
 
 def _register_account_entitlements(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("account_entitlements"),
         name="account_entitlements",
         description=_TOOL_DESCRIPTIONS["account_entitlements"],
         title="查看账号额度",
     )
-    async def account_entitlements() -> object:  # pyright: ignore[reportUnusedFunction]
-        return await env.call(
-            tools.account_entitlements,
-            tool_name="account_entitlements",
+    async def account_entitlements() -> output.AccountEntitlementsOutput:  # pyright: ignore[reportUnusedFunction]
+        return cast(
+            output.AccountEntitlementsOutput,
+            await env.call(
+                tools.account_entitlements,
+                tool_name="account_entitlements",
+            ),
         )
 
 
 def _register_reminder_create(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("reminder_create"),
         name="reminder_create",
         description=_TOOL_DESCRIPTIONS["reminder_create"],
         title="创建提醒",
@@ -928,28 +973,31 @@ def _register_reminder_create(apps: Apps, env: McpToolEnv) -> None:
             Literal["general", "bookkeeping", "habit"], Field(default="general")
         ] = "general",
         dueAt: Annotated[str | None, Field(default=None, description="可选截止时间")] = None,
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.reminder_create(
-                ctx,
-                title=title,
-                note=note,
-                scene=scene,
-                remind_at=remindAt,
-                local_date_time=localDateTime,
-                after_minutes=afterMinutes,
-                deadline_at=dueAt,
-                timezone_name=timezone,
+    ) -> output.ReminderCreateOutput:
+        return cast(
+            output.ReminderCreateOutput,
+            await env.call(
+                lambda ctx: tools.reminder_create(
+                    ctx,
+                    title=title,
+                    note=note,
+                    scene=scene,
+                    remind_at=remindAt,
+                    local_date_time=localDateTime,
+                    after_minutes=afterMinutes,
+                    deadline_at=dueAt,
+                    timezone_name=timezone,
+                    idempotency_key=idempotencyKey,
+                ),
+                tool_name="reminder_create",
                 idempotency_key=idempotencyKey,
             ),
-            tool_name="reminder_create",
-            idempotency_key=idempotencyKey,
         )
 
 
 def _register_feedback_submit(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("feedback_submit"),
         name="feedback_submit",
         description=_TOOL_DESCRIPTIONS["feedback_submit"],
         title="提交反馈",
@@ -965,18 +1013,21 @@ def _register_feedback_submit(apps: Apps, env: McpToolEnv) -> None:
             dict | None,
             Field(default=None, description="可选功能名、场景和客户端上下文；不得放入密钥"),
         ] = None,
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.feedback_submit(
-                ctx, kind=kind, summary=summary, details=details, context=context
+    ) -> output.FeedbackSubmitOutput:
+        return cast(
+            output.FeedbackSubmitOutput,
+            await env.call(
+                lambda ctx: tools.feedback_submit(
+                    ctx, kind=kind, summary=summary, details=details, context=context
+                ),
+                tool_name="feedback_submit",
             ),
-            tool_name="feedback_submit",
         )
 
 
 def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("asset_upload_intent_create"),
         name="asset_upload_intent_create",
         description=_TOOL_DESCRIPTIONS["asset_upload_intent_create"],
         title="准备上传附件",
@@ -985,20 +1036,23 @@ def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
         contentType: Annotated[str, Field(min_length=3, max_length=120)],
         sizeBytes: Annotated[int, Field(gt=0)],
         idempotencyKey: Annotated[str, Field(min_length=8, max_length=128)],
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.asset_upload_intent_create(
-                ctx,
-                content_type=contentType,
-                size_bytes=sizeBytes,
+    ) -> output.AssetUploadIntentOutput:
+        return cast(
+            output.AssetUploadIntentOutput,
+            await env.call(
+                lambda ctx: tools.asset_upload_intent_create(
+                    ctx,
+                    content_type=contentType,
+                    size_bytes=sizeBytes,
+                    idempotency_key=idempotencyKey,
+                ),
+                tool_name="asset_upload_intent_create",
                 idempotency_key=idempotencyKey,
             ),
-            tool_name="asset_upload_intent_create",
-            idempotency_key=idempotencyKey,
         )
 
     @apps.tool(
-        resource_uri=UTILITY_UI_URI,
+        resource_uri=tool_ui_uri("asset_upload_complete"),
         name="asset_upload_complete",
         description=_TOOL_DESCRIPTIONS["asset_upload_complete"],
         title="确认附件上传",
@@ -1009,20 +1063,21 @@ def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
         checksumSha256: Annotated[
             str | None, Field(default=None, min_length=64, max_length=64)
         ] = None,
-    ) -> object:
-        return await env.call(
-            lambda ctx: tools.asset_upload_complete(
-                ctx, asset_id=assetId, checksum_sha256=checksumSha256
+    ) -> output.AssetUploadCompleteOutput:
+        return cast(
+            output.AssetUploadCompleteOutput,
+            await env.call(
+                lambda ctx: tools.asset_upload_complete(
+                    ctx, asset_id=assetId, checksum_sha256=checksumSha256
+                ),
+                tool_name="asset_upload_complete",
+                idempotency_key=idempotencyKey,
             ),
-            tool_name="asset_upload_complete",
-            idempotency_key=idempotencyKey,
         )
 
 
 __all__ = [
-    "BOOKKEEPING_UI_URI",
-    "TIMELINE_UI_URI",
-    "HABITS_UI_URI",
-    "UTILITY_UI_URI",
+    "MCP_APP_TOOL_SPECS",
     "build_mcp_server",
+    "tool_ui_uri",
 ]
