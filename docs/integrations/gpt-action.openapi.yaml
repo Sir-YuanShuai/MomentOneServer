@@ -35,8 +35,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/MomentActionResult'
         '400':
           description: 参数、附件来源或幂等键无效。
         '401':
@@ -49,6 +48,57 @@ paths:
           description: 临时附件已过期、无法下载或内容校验失败。
 components:
   schemas:
+    MomentMediaResult:
+      type: object
+      required: [assetId, type]
+      properties:
+        assetId:
+          type: string
+          format: uuid
+          description: 已保存并关联到本次 Moment 的附件 ID。
+        type:
+          type: string
+          enum: [image, audio, video, file]
+        downloadUrl:
+          type: [string, 'null']
+          format: uri
+          description: 短期下载地址；可能为空，不应作为持久标识保存。
+        thumbnailUrl:
+          type: [string, 'null']
+          format: uri
+    MomentActionResult:
+      type: object
+      required: [id, title, category, type, occurredAt, timezone, revision, createdAt, media]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 最终创建的 Moment ID。
+        title:
+          type: string
+        description:
+          type: [string, 'null']
+        category:
+          type: string
+        type:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+          description: 事件发生时间，不是记录创建时间或提醒时间。
+        timezone:
+          type: string
+        revision:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        media:
+          type: array
+          description: 已完成服务端导入并与 Moment 关联的附件；数量可用于最终结果反馈。
+          items:
+            $ref: '#/components/schemas/MomentMediaResult'
     OpenAIFileReference:
       type: object
       required: [name, id, mime_type, download_link]

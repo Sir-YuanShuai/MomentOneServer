@@ -17,6 +17,8 @@ GPT 编辑器导入 `docs/integrations/gpt-action.openapi.yaml`，认证选择 O
 
 Server 不保存临时下载地址，不接受任意远程 URL，不把上传中间状态作为面向用户的 UI。允许来源通过 `MOMENT_ONE_OPENAI_ATTACHMENT_ALLOWED_HOSTS` 配置，默认仅 `files.oaiusercontent.com`。
 
+部署后可运行 `python3 scripts/verify_gpt_action_contract.py` 复核健康状态、生产 OpenAPI 路由、幂等请求头以及 ChatGPT 文件引用字段。真实验收仍必须从 GPT 对话发送附件并检查返回的 `media[].assetId`：契约检查不能替代账号侧 OAuth 和临时下载链接的端到端验证。
+
 ## 眼镜端后续规划
 
 眼镜端由 Moment One 自己控制附件字节，后续采用“录制策略 + Agent 决策 + 后台上传队列”实现：
