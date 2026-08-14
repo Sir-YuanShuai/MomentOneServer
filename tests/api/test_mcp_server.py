@@ -177,7 +177,7 @@ class FakeResult:
 
 
 # 测试用 mcp_authorizations.scope（权限以授权记录为准）
-FAKE_AUTH_SCOPE = "moments.read moments.write"
+FAKE_AUTH_SCOPE = "moments.read moments.write reminders.write"
 
 
 @contextlib.asynccontextmanager
@@ -532,7 +532,9 @@ async def test_mcp_list_tools_with_qr_binding_token(
 ) -> None:
     """认证双形态之一：QR Binding token 可经 MCP 端点识别用户并列出工具。"""
     settings = _make_settings(tmp_path)
-    token = _issue_glasses_token(settings, scope=("moments.read", "moments.write"))
+    token = _issue_glasses_token(
+        settings, scope=("moments.read", "moments.write", "reminders.write")
+    )
 
     async with _mcp_client(app) as client:
         session_id = await _initialize(client, token)
@@ -591,15 +593,50 @@ async def test_mcp_list_tools_with_qr_binding_token(
         reminder["inputSchema"]["properties"]
     )
     tool_map = {tool["name"]: tool for tool in tools}
+    assert all(not tool_map[name].get("_meta", {}).get("ui") for name in MCP_APP_TOOL_SPECS)
+    for tool_name in MCP_APP_TOOL_SPECS:
+        assert tool_map[tool_name]["outputSchema"]["type"] == "object"
+        assert tool_map[tool_name]["outputSchema"].get("properties")
+
+
+@pytest.mark.asyncio
+async def test_normal_mcp_client_cannot_discover_or_call_glasses_only_tools(
+    app: FastAPI, tmp_path: Path
+) -> None:
+    settings = _make_settings(tmp_path)
+    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+
+    async with _mcp_client(app) as client:
+        session_id = await _initialize(client, token)
+        listed = await _post(
+            client,
+            session_id,
+            token,
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}},
+        )
+        called = await _post(
+            client,
+            session_id,
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "agent_plan", "arguments": {"input": "查看习惯"}},
+            },
+        )
+
+    names = {tool["name"] for tool in listed["result"]["tools"]}
+    assert names.isdisjoint({"bookkeeping_plan", "agent_plan", "a2ui_action"})
+    tool_map = {tool["name"]: tool for tool in listed["result"]["tools"]}
     app_resource_uris = {
         tool_map[name].get("_meta", {}).get("ui", {}).get("resourceUri")
         for name in MCP_APP_TOOL_SPECS
     }
     assert app_resource_uris == {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS}
     assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 19
-    for tool_name in MCP_APP_TOOL_SPECS:
-        assert tool_map[tool_name]["outputSchema"]["type"] == "object"
-        assert tool_map[tool_name]["outputSchema"].get("properties")
+    assert called["result"]["isError"] is True
+    assert called["result"]["structuredContent"]["error"]["code"] == ("CLIENT_TYPE_UNSUPPORTED")
 
 
 @pytest.mark.asyncio
@@ -1319,7 +1356,7 @@ async def test_bookkeeping_plan_resolves_actions(app: FastAPI, tmp_path: Path) -
     from datetime import UTC, datetime, timedelta
 
     settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    token = _issue_glasses_token(settings, scope=("moments.read", "moments.write"))
 
     async with _mcp_client(app) as client:
         session_id = await _initialize(client, token)
@@ -1385,7 +1422,7 @@ async def test_bookkeeping_plan_today_and_summary_custom_range(
     from datetime import UTC, datetime
 
     settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    token = _issue_glasses_token(settings, scope=("moments.read", "moments.write"))
 
     async with _mcp_client(app) as client:
         session_id = await _initialize(client, token)
@@ -1546,7 +1583,7 @@ async def test_agent_plan_routes_registered_schema_valid_tools(
     app: FastAPI, fake_repos: dict[str, Any], tmp_path: Path
 ) -> None:
     settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read", "moments.write"))
+    token = _issue_glasses_token(settings, scope=("moments.read", "moments.write"))
     now = datetime.now(UTC)
     goal = HabitGoal(
         id=UUID("44444444-4444-4444-8444-444444444444"),
@@ -1617,7 +1654,7 @@ async def test_agent_plan_scope_and_a2ui_action_whitelist(app: FastAPI, tmp_path
 
     mod = sys.modules[__name__]  # type: ignore[assignment]
     settings = _make_settings(tmp_path)
-    token = _issue_mcp_token(settings, scope=("moments.read",))
+    token = _issue_glasses_token(settings, scope=("moments.read",))
     moment_id = "55555555-5555-4555-8555-555555555555"
     original_scope = mod.FAKE_AUTH_SCOPE  # type: ignore[attr-defined]
     mod.FAKE_AUTH_SCOPE = "moments.read"  # type: ignore[attr-defined]

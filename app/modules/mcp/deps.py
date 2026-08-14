@@ -21,6 +21,7 @@ from app.modules.quotas.tool_policy import TOOL_POLICIES
 logger = structlog.get_logger()
 
 SessionFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+GLASSES_ONLY_TOOLS = frozenset({"bookkeeping_plan", "agent_plan", "a2ui_action"})
 
 
 class McpToolEnv:
@@ -104,6 +105,16 @@ class McpToolEnv:
         actor_id = client_id or device_id
         request_id = str(uuid4())
         policy = TOOL_POLICIES.get(tool_name)
+
+        # tools/list filtering is a discovery aid, not an authorization boundary.
+        # Enforce the same device split here so a normal MCP client cannot invoke
+        # a glasses-only planner/A2UI tool by guessing its name.
+        if tool_name in GLASSES_ONLY_TOOLS and method != "glasses":
+            return err_result(
+                "CLIENT_TYPE_UNSUPPORTED",
+                "该工具仅供已绑定的 Moment One 眼镜设备使用。",
+                {"requiredClientType": "glasses"},
+            )
 
         async with self._session_factory() as session:
             quota_repo = QuotaRepository(session)
@@ -235,4 +246,4 @@ async def _default_session_factory() -> AsyncGenerator[AsyncSession]:
         yield session
 
 
-__all__ = ["McpToolEnv"]
+__all__ = ["GLASSES_ONLY_TOOLS", "McpToolEnv"]

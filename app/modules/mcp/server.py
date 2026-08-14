@@ -223,6 +223,8 @@ def build_mcp_server(
         extensions=[apps, A2UIExtension()],
         token_verifier=token_verifier,
         auth=auth,
+        # Must precede extension interceptors: Apps handles tools/list itself.
+        middleware=[McpToolVisibilityMiddleware(env)],
     )
 
     # 非 Apps 绑定工具在 server 构造后注册
@@ -230,8 +232,6 @@ def build_mcp_server(
     _register_agent_plan(server, env)
     _register_a2ui_action(server, env)
     _register_bookkeeping_prompt(server)
-    server.middleware.append(McpToolVisibilityMiddleware(env))
-
     return server
 
 

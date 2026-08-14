@@ -15,6 +15,8 @@ GPT 编辑器导入 `docs/integrations/gpt-action.openapi.yaml`，认证选择 O
 
 `openaiFileIdRefs` 由 ChatGPT 自动填入，每项包含 `name`、`id`、`mime_type` 和五分钟有效的 `download_link`。Agent 只应选择与本次记录直接相关的附件。Server 校验来源后下载文件，转存至对象存储，创建 ready Asset，再通过 `assetIds` 与 Moment 关联。
 
+这是 GPT Actions 的宿主专用文件传递约定，不是 MCP 的通用附件上传协议。通用远程 MCP 客户端不能假设宿主会把对话附件自动变成可下载 URL；Moment One 的通用 MCP 仍采用 `asset_upload_intent_create` → 客户端向预签名地址上传字节 → `asset_upload_complete` → 写工具引用 `assetIds`。若未来接入其他宿主的临时下载链接，必须新增对应适配器，并限制签名 URL 的来源域、重定向、大小、类型和有效期，禁止让 Server 拉取任意用户 URL。
+
 Server 不保存临时下载地址，不接受任意远程 URL，不把上传中间状态作为面向用户的 UI。允许来源通过 `MOMENT_ONE_OPENAI_ATTACHMENT_ALLOWED_HOSTS` 配置，默认仅 `files.oaiusercontent.com`。
 
 部署后可运行 `python3 scripts/verify_gpt_action_contract.py` 复核健康状态、生产 OpenAPI 路由、幂等请求头以及 ChatGPT 文件引用字段。真实验收仍必须从 GPT 对话发送附件并检查返回的 `media[].assetId`：契约检查不能替代账号侧 OAuth 和临时下载链接的端到端验证。

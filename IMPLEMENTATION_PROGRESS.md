@@ -209,7 +209,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 - [x] 记账、时间线、习惯和通用工具复用四个 Web/CDN 渲染内核，Server 仅提供轻量启动壳
 - [x] 19 个工具全部提供标准 `outputSchema`，覆盖成功结构与 `structuredContent.error` 失败结构
 - [x] `tools/list`、资源枚举/读取、真实成功与错误调用均有契约测试
-- [x] 眼镜专用 `bookkeeping_plan`、`agent_plan`、`a2ui_action` 保持 A2UI 边界，不绑定 HTML Apps
+- [x] 眼镜专用 `bookkeeping_plan`、`agent_plan`、`a2ui_action` 保持 A2UI 边界，不绑定 HTML Apps；普通 MCP/MCP Apps 的 `tools/list` 不返回它们，猜测工具名直接调用也会拒绝
 
 ## 未实现的目标表
 
@@ -250,7 +250,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 - 订阅权益边界：Casdoor 管余额/订单/支付/订阅，Server 管 Entitlement、Quota 和执行；
 - 建议 Free/Plus/Pro 存储为 1/10/50 GiB，MCP/眼镜共享 Tool、写 Tool、Planner、设备和客户端额度；
 - 存储引入 used/reserved/effectiveQuota、Upload Reservation 和 Bucket 对账；
-- MCP `tools/list` 与 `agent_plan` 已按 Scope + Entitlement + Quota 过滤；A2UI/Text/structuredContent 只计一次；
+- MCP `tools/list` 与 `agent_plan` 已按 Scope + Entitlement + Quota 过滤，并按已验签令牌中的设备类型分流；A2UI/Text/structuredContent 只计一次；
 - 账号关联目标让 `user_identities` 接管认证，增加 Link Session、解绑 Preview/Confirm、User Merge；
 - 账号合并时迁移数据、设备、MCP、存储和权益，默认免费 Grant 不能重复领取；
 - 详细文档：`docs/domain/IDENTITY_ACCOUNT_LINKING.md`、`docs/data/STORAGE_DATA_MODEL.md`、根目录 `docs/contracts/ENTITLEMENTS_AND_LIMITS.md`。
