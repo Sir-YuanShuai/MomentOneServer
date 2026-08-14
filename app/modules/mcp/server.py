@@ -3,7 +3,7 @@
 - Streamable HTTP（`POST /mcp`，挂载见 application.py）
 - Bearer 鉴权由 `BearerAuthBackend(MomentTokenVerifier)` + `RequireAuthMiddleware` 处理
 - 工具：记账 + 通用 Moment + 每日回顾 + 习惯目标/打卡
-- MCP Apps：记账、记忆时间线、习惯追踪三套交互 UI
+- MCP Apps：记账、记忆时间线、习惯追踪、通用操作四套交互 UI
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 BOOKKEEPING_UI_URI = "ui://moment-one/bookkeeping"
 TIMELINE_UI_URI = "ui://moment-one/timeline"
 HABITS_UI_URI = "ui://moment-one/habits"
+UTILITY_UI_URI = "ui://moment-one/utility"
 
 
 # MCP Apps 轻量启动壳；业务结果始终另有 content 文本降级。
@@ -166,6 +167,11 @@ def build_mcp_server(
     _register_bookkeeping_summary(apps, env)
     _register_moment_app_tools(apps, env)
     _register_habit_app_tools(apps, env)
+    _register_moments_count(apps, env)
+    _register_account_entitlements(apps, env)
+    _register_reminder_create(apps, env)
+    _register_feedback_submit(apps, env)
+    _register_asset_tools(apps, env)
     asset_root = f"{apps_asset_base_url.rstrip('/')}/{apps_version.strip('/')}"
     parsed_asset_root = urlparse(asset_root)
     if parsed_asset_root.scheme not in {"http", "https"} or not parsed_asset_root.netloc:
@@ -199,6 +205,15 @@ def build_mcp_server(
         csp=csp,
         domain=resource_origin,
     )
+    apps.add_html_resource(
+        UTILITY_UI_URI,
+        _app_shell(f"{asset_root}/assets/utility.js", "Moment One 操作结果"),
+        name="Moment One 操作结果",
+        title="操作结果",
+        description="统计、额度、提醒、反馈和附件状态（ui://moment-one/utility）",
+        csp=csp,
+        domain=resource_origin,
+    )
 
     server = MCPServer(
         name="moment-one-mcp",
@@ -212,13 +227,8 @@ def build_mcp_server(
 
     # 非 Apps 绑定工具在 server 构造后注册
     _register_bookkeeping_plan(server, env)
-    _register_moments_count(server, env)
     _register_agent_plan(server, env)
     _register_a2ui_action(server, env)
-    _register_account_entitlements(server, env)
-    _register_reminder_create(server, env)
-    _register_feedback_submit(server, env)
-    _register_asset_tools(server, env)
     _register_bookkeeping_prompt(server)
     server.middleware.append(McpToolVisibilityMiddleware(env))
 
@@ -802,8 +812,9 @@ def _register_habit_app_tools(apps: Apps, env: McpToolEnv) -> None:
         )
 
 
-def _register_moments_count(server: MCPServer, env: McpToolEnv) -> None:
-    @server.tool(
+def _register_moments_count(apps: Apps, env: McpToolEnv) -> None:
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
         name="moments_count",
         description=_TOOL_DESCRIPTIONS["moments_count"],
         title="统计 Moment 数量",
@@ -874,8 +885,9 @@ def _register_a2ui_action(server: MCPServer, env: McpToolEnv) -> None:
         )
 
 
-def _register_account_entitlements(server: MCPServer, env: McpToolEnv) -> None:
-    @server.tool(
+def _register_account_entitlements(apps: Apps, env: McpToolEnv) -> None:
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
         name="account_entitlements",
         description=_TOOL_DESCRIPTIONS["account_entitlements"],
         title="查看账号额度",
@@ -887,8 +899,9 @@ def _register_account_entitlements(server: MCPServer, env: McpToolEnv) -> None:
         )
 
 
-def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
-    @server.tool(
+def _register_reminder_create(apps: Apps, env: McpToolEnv) -> None:
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
         name="reminder_create",
         description=_TOOL_DESCRIPTIONS["reminder_create"],
         title="创建提醒",
@@ -934,9 +947,12 @@ def _register_reminder_create(server: MCPServer, env: McpToolEnv) -> None:
         )
 
 
-def _register_feedback_submit(server: MCPServer, env: McpToolEnv) -> None:
-    @server.tool(
-        name="feedback_submit", description=_TOOL_DESCRIPTIONS["feedback_submit"], title="提交反馈"
+def _register_feedback_submit(apps: Apps, env: McpToolEnv) -> None:
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
+        name="feedback_submit",
+        description=_TOOL_DESCRIPTIONS["feedback_submit"],
+        title="提交反馈",
     )
     async def feedback_submit(  # pyright: ignore[reportUnusedFunction]
         kind: Annotated[
@@ -958,8 +974,9 @@ def _register_feedback_submit(server: MCPServer, env: McpToolEnv) -> None:
         )
 
 
-def _register_asset_tools(server: MCPServer, env: McpToolEnv) -> None:
-    @server.tool(
+def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
         name="asset_upload_intent_create",
         description=_TOOL_DESCRIPTIONS["asset_upload_intent_create"],
         title="准备上传附件",
@@ -980,7 +997,8 @@ def _register_asset_tools(server: MCPServer, env: McpToolEnv) -> None:
             idempotency_key=idempotencyKey,
         )
 
-    @server.tool(
+    @apps.tool(
+        resource_uri=UTILITY_UI_URI,
         name="asset_upload_complete",
         description=_TOOL_DESCRIPTIONS["asset_upload_complete"],
         title="确认附件上传",
@@ -1001,4 +1019,10 @@ def _register_asset_tools(server: MCPServer, env: McpToolEnv) -> None:
         )
 
 
-__all__ = ["BOOKKEEPING_UI_URI", "TIMELINE_UI_URI", "HABITS_UI_URI", "build_mcp_server"]
+__all__ = [
+    "BOOKKEEPING_UI_URI",
+    "TIMELINE_UI_URI",
+    "HABITS_UI_URI",
+    "UTILITY_UI_URI",
+    "build_mcp_server",
+]

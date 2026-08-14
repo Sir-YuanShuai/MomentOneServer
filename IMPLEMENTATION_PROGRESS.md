@@ -191,7 +191,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Search | `app/modules/search/` | 骨架 |
 | MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；Moment；习惯每日/每周/每月目标、修改、打卡、精确进度和关联提醒；两阶段附件直传与 ready assetIds 引用；反馈收集；设备身份级 Apps/A2UI 分流；工具级 Scope + 审计） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
-| MCP Apps UI | Server `app/modules/mcp/server.py` 轻量壳；源码/静态 bundle 位于 `MomentOneWeb/src/mcp-apps/` 与 `/mcp-apps/v1/` | 已实现 3 个紧凑结果卡：`bookkeeping` / `timeline` / `habits`；Server 不再携带或代理完整 bundle，`ui://` 壳通过 CSP 允许 Web 静态 origin；卡片只渲染本次 structuredContent |
+| MCP Apps UI | Server `app/modules/mcp/server.py` 轻量壳；源码/静态 bundle 位于 `MomentOneWeb/src/mcp-apps/` 与 `/mcp-apps/v1/` | 已实现 4 类紧凑结果卡：`bookkeeping` / `timeline` / `habits` / `utility`；全部普通 MCP 查询和可视化写操作均绑定对应 UI，眼镜专用 Planner/A2UI Action 保持原生 A2UI；Server 不携带或代理完整 bundle，`ui://` 壳通过 CSP 允许 Web 静态 origin |
 | A2UI over MCP | `app/modules/mcp/a2ui.py` + `contracts/a2ui/` | 已实现 Server 侧 v0.9 capability negotiation、官方 Schema/Catalog 固定、9 个紧凑结果卡 builder、校验失败文本降级与标准 Tool Result fixture；实际眼镜客户端代码 standalone 联调已通过，未提交/未部署，等待真机 AIUI 页面联调 |
 | Admin Operations | `app/modules/admin/` + `app/api/routes/admin.py` | 已实现（概览、用户、设备/MCP 授权、审计、过期记录 Preview + Confirm） |
 | Audit | `app/modules/audit/` | 已实现只追加写入与管理员只读查询 |

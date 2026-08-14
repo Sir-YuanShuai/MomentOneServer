@@ -601,6 +601,18 @@ async def test_mcp_list_tools_with_qr_binding_token(
     assert habit_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
         "ui://moment-one/habits"
     )
+    for utility_tool_name in (
+        "moments_count",
+        "account_entitlements",
+        "reminder_create",
+        "feedback_submit",
+        "asset_upload_intent_create",
+        "asset_upload_complete",
+    ):
+        utility_tool = next(t for t in tools if t["name"] == utility_tool_name)
+        assert utility_tool.get("_meta", {}).get("ui", {}).get("resourceUri") == (
+            "ui://moment-one/utility"
+        )
 
 
 @pytest.mark.asyncio
@@ -1024,6 +1036,7 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
         "ui://moment-one/bookkeeping",
         "ui://moment-one/timeline",
         "ui://moment-one/habits",
+        "ui://moment-one/utility",
     } <= uris
     content = resource["result"]["contents"][0]
     assert content["mimeType"] == "text/html;profile=mcp-app"
