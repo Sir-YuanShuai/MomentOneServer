@@ -175,12 +175,14 @@ jobs:
         env:
           MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID: ${{ secrets.MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID }}
           MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET: ${{ secrets.MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET }}
+          MOMENT_ONE_GPT_ACTION_CLIENT_ID: ${{ secrets.MOMENT_ONE_GPT_ACTION_CLIENT_ID }}
+          MOMENT_ONE_GPT_ACTION_CLIENT_SECRET: ${{ secrets.MOMENT_ONE_GPT_ACTION_CLIENT_SECRET }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID,MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET
+          envs: MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID,MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET,MOMENT_ONE_GPT_ACTION_CLIENT_ID,MOMENT_ONE_GPT_ACTION_CLIENT_SECRET
           script: |
             set -euo pipefail
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
@@ -197,6 +199,12 @@ jobs:
             }
             sync_env_secret MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_ID}"
             sync_env_secret MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET "${MOMENT_ONE_CASDOOR_MANAGEMENT_CLIENT_SECRET}"
+            if [ -n "${MOMENT_ONE_GPT_ACTION_CLIENT_ID:-}" ] || [ -n "${MOMENT_ONE_GPT_ACTION_CLIENT_SECRET:-}" ]; then
+              : "${MOMENT_ONE_GPT_ACTION_CLIENT_ID:?Missing GPT Action client ID}"
+              : "${MOMENT_ONE_GPT_ACTION_CLIENT_SECRET:?Missing GPT Action client secret}"
+              sync_env_secret MOMENT_ONE_GPT_ACTION_CLIENT_ID "${MOMENT_ONE_GPT_ACTION_CLIENT_ID}"
+              sync_env_secret MOMENT_ONE_GPT_ACTION_CLIENT_SECRET "${MOMENT_ONE_GPT_ACTION_CLIENT_SECRET}"
+            fi
             for attempt in 1 2 3 4 5; do
               if docker compose -f compose.prod.yml pull api; then
                 break
