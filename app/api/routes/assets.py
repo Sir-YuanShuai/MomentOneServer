@@ -101,6 +101,11 @@ class _UnconfiguredStorage:
         self._raise()
         raise AssertionError  # pragma: no cover
 
+    def put_object_bytes(
+        self, *, user_id: str, asset_id: str, data: bytes, content_type: str
+    ) -> None:
+        self._raise()
+
     def put_thumbnail(
         self,
         *,

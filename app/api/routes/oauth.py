@@ -109,6 +109,7 @@ async def token(
     code_verifier: str | None = Form(default=None),
     redirect_uri: str | None = Form(default=None),
     client_id: str | None = Form(default=None),
+    client_secret: str | None = Form(default=None),
     authorization: str | None = Header(default=None),
     service: DeviceBindingService = Depends(_make_service),
     mcp_oauth: MomentOAuthService = Depends(_make_mcp_oauth_service),
@@ -119,7 +120,9 @@ async def token(
 
         try:
             decoded = base64.b64decode(authorization.removeprefix("Basic ").strip()).decode("utf-8")
-            client_id = decoded.split(":", 1)[0] or None
+            basic_parts = decoded.split(":", 1)
+            client_id = basic_parts[0] or None
+            client_secret = basic_parts[1] if len(basic_parts) > 1 else None
         except Exception:
             client_id = None
     if grant_type == QR_BINDING_GRANT_TYPE:
@@ -146,17 +149,18 @@ async def token(
 
     if grant_type == GRANT_AUTHORIZATION_CODE:
         # MCP OAuth：授权码 + PKCE 换我方 RS256 token
-        if not code or not code_verifier or not client_id:
+        if not code or not client_id:
             raise ApplicationError(
                 code="INVALID_REQUEST",
-                message="code / code_verifier / client_id 是必需的。",
+                message="code / client_id 是必需的；公共客户端还必须提供 code_verifier。",
                 status_code=400,
             )
         result = await mcp_oauth.exchange_auth_code(
             client_id=client_id,
             code=code,
-            code_verifier=code_verifier,
+            code_verifier=code_verifier or "",
             redirect_uri=redirect_uri,
+            client_secret=client_secret,
         )
         return TokenResponse(
             binding_id=result.binding_id,

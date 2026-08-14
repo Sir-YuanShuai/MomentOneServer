@@ -59,6 +59,10 @@ class ObjectStorage(Protocol):
 
     def get_object_bytes(self, *, user_id: str, asset_id: str) -> bytes: ...
 
+    def put_object_bytes(
+        self, *, user_id: str, asset_id: str, data: bytes, content_type: str
+    ) -> None: ...
+
     def put_thumbnail(
         self,
         *,
@@ -183,6 +187,18 @@ class S3ObjectStorage:
             return resp["Body"].read()
         finally:
             resp["Body"].close()
+
+    def put_object_bytes(
+        self, *, user_id: str, asset_id: str, data: bytes, content_type: str
+    ) -> None:
+        """服务端受信任导入使用；普通客户端仍走 presigned PUT。"""
+        key = build_storage_key(UUID(user_id), UUID(asset_id))
+        self._client.put_object(
+            Bucket=self._bucket,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
 
     def put_thumbnail(
         self,

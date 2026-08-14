@@ -1,7 +1,11 @@
+import asyncio
 import contextlib
+import hashlib
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, Header, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +42,8 @@ from app.infrastructure.storage.object_storage import (
     ObjectStorageNotConfigured,
     get_object_storage,
 )
-from app.modules.assets.domain import AssetRole, AssetState
+from app.modules.assets.domain import AssetRole, AssetState, infer_kind
+from app.modules.entitlements.repository import EntitlementRepository
 from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
     LocationSource,
@@ -295,6 +300,26 @@ class CreateMomentRequest(BaseModel):
         return value
 
 
+class OpenAIFileReference(BaseModel):
+    """ChatGPT Actions 自动注入的会话附件引用。"""
+
+    name: str = Field(min_length=1, max_length=255)
+    id: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=3, max_length=120)
+    download_link: str = Field(min_length=12, max_length=4096)
+
+
+class CreateMomentFromOpenAIRequest(CreateMomentRequest):
+    openaiFileIdRefs: list[OpenAIFileReference] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "由 ChatGPT 自动填入的当前会话附件。仅在附件适合作为本次记录证据或内容时携带；"
+            "不要要求用户重复上传。"
+        ),
+    )
+
+
 class UpdateMomentRequest(BaseModel):
     expectedRevision: int
     title: str | None = Field(default=None, max_length=20)
@@ -347,6 +372,129 @@ class CursorPageResponse(BaseModel):
     items: list[dict]
     nextCursor: str | None = None
     hasMore: bool = False
+
+
+def validate_openai_download_url(url: str, settings: Settings) -> None:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    allowed = {item.lower().rstrip(".") for item in settings.openai_attachment_allowed_hosts}
+    if parsed.scheme != "https" or not host or host not in allowed:
+        raise ApplicationError(
+            code="UNTRUSTED_ATTACHMENT_SOURCE",
+            message="附件来源不是受信任的 OpenAI 文件服务。",
+            status_code=400,
+        )
+    if parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise ApplicationError(
+            code="UNTRUSTED_ATTACHMENT_SOURCE",
+            message="附件下载地址格式无效。",
+            status_code=400,
+        )
+
+
+async def _import_openai_files(
+    refs: list[OpenAIFileReference],
+    *,
+    user_id: UUID,
+    session: AsyncSession,
+    storage: ObjectStorage,
+    settings: Settings,
+) -> list[str]:
+    """下载 ChatGPT 短期附件并转存为 ready Asset；不向用户暴露中间状态。"""
+    imported: list[str] = []
+    quota = EntitlementRepository(session)
+    asset_repo = AssetRepository(session)
+    plan_limit = await quota.max_upload_bytes(user_id)
+    max_bytes = min(settings.max_upload_bytes, plan_limit or settings.max_upload_bytes)
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(30, connect=10), follow_redirects=False
+    ) as client:
+        for ref in refs:
+            validate_openai_download_url(ref.download_link, settings)
+            kind = infer_kind(ref.mime_type)
+            if kind is None:
+                raise ApplicationError(
+                    code="MEDIA_TYPE_NOT_ALLOWED",
+                    message=f"不支持的附件类型：{ref.mime_type}",
+                    status_code=415,
+                )
+            try:
+                async with client.stream("GET", ref.download_link) as response:
+                    response.raise_for_status()
+                    response_type = response.headers.get("content-type", "").split(";", 1)[0]
+                    if response_type and response_type.lower() != ref.mime_type.lower():
+                        raise ApplicationError(
+                            code="MEDIA_UPLOAD_MISMATCH",
+                            message="ChatGPT 附件类型与声明不一致。",
+                            status_code=422,
+                        )
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > max_bytes:
+                        raise ApplicationError(
+                            code="MEDIA_TOO_LARGE",
+                            message=f"附件大小超过上限 {max_bytes} 字节。",
+                            status_code=413,
+                        )
+                    payload = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        payload.extend(chunk)
+                        if len(payload) > max_bytes:
+                            raise ApplicationError(
+                                code="MEDIA_TOO_LARGE",
+                                message=f"附件大小超过上限 {max_bytes} 字节。",
+                                status_code=413,
+                            )
+            except ApplicationError:
+                raise
+            except (httpx.HTTPError, ValueError) as exc:
+                raise ApplicationError(
+                    code="ATTACHMENT_IMPORT_FAILED",
+                    message="无法从 ChatGPT 临时文件地址导入附件。",
+                    status_code=422,
+                ) from exc
+
+            if not payload:
+                raise ApplicationError(
+                    code="ATTACHMENT_IMPORT_FAILED",
+                    message="ChatGPT 附件内容为空。",
+                    status_code=422,
+                )
+            await quota.reserve_upload(user_id, len(payload))
+            asset = await asset_repo.create(
+                user_id=user_id,
+                kind=kind,
+                content_type=ref.mime_type.lower(),
+                size_bytes=len(payload),
+            )
+            await asyncio.to_thread(
+                storage.put_object_bytes,
+                user_id=str(user_id),
+                asset_id=str(asset.id),
+                data=bytes(payload),
+                content_type=ref.mime_type.lower(),
+            )
+            await asset_repo.mark_ready(
+                asset.id,
+                user_id,
+                size_bytes=len(payload),
+                checksum_sha256=hashlib.sha256(payload).hexdigest(),
+            )
+            await quota.complete_upload(
+                user_id, reserved_bytes=len(payload), actual_bytes=len(payload)
+            )
+            await SqlAuditEventRepository(session).append(
+                user_id=user_id,
+                actor_type="mcp",
+                actor_id="chatgpt",
+                event_type="asset.imported",
+                resource_type="asset",
+                resource_id=asset.id,
+                allowed=True,
+                metadata={"provider": "openai", "externalFileId": ref.id},
+            )
+            imported.append(str(asset.id))
+    return imported
 
 
 @router.get("", response_model=CursorPageResponse)
@@ -541,6 +689,83 @@ async def create_moment(
         )
 
     return response
+
+
+@router.post(
+    "/from-openai-files",
+    response_model=dict,
+    status_code=status.HTTP_201_CREATED,
+    summary="从 ChatGPT 会话附件创建 Moment",
+)
+async def create_moment_from_openai_files(
+    body: CreateMomentFromOpenAIRequest,
+    ctx: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_db_session),
+    storage: ObjectStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=128),
+) -> dict:
+    """供 GPT Action 使用：Agent 选择相关会话附件，服务端无感导入并创建记录。"""
+    idem_repo = SqlIdempotencyRepository(session)
+    fingerprint_body = body.model_dump(mode="json")
+    for item in fingerprint_body["openaiFileIdRefs"]:
+        item.pop("download_link", None)
+    idem_record = await idem_repo.acquire(
+        user_id=ctx.user_id,
+        operation="create_moment_from_openai_files",
+        idempotency_key=idempotency_key,
+        request_payload=fingerprint_body,
+    )
+    if idem_record.request_fingerprint != fingerprint_payload(fingerprint_body):
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="Idempotency-Key 已用于不同的记录或附件。",
+            status_code=409,
+        )
+    if idem_record.state == "completed" and idem_record.response_body is not None:
+        return idem_record.response_body
+
+    imported_ids: list[str] = []
+    try:
+        imported_ids = await _import_openai_files(
+            body.openaiFileIdRefs,
+            user_id=ctx.user_id,
+            session=session,
+            storage=storage,
+            settings=settings,
+        )
+        create_payload = body.model_dump(exclude={"openaiFileIdRefs"})
+        create_payload["assetIds"] = [*body.assetIds, *imported_ids]
+        if len(create_payload["assetIds"]) > 10:
+            raise ApplicationError(
+                code="INVALID_ARGUMENTS",
+                message="一条记录最多关联 10 个附件。",
+                status_code=400,
+            )
+        response = await create_moment(
+            CreateMomentRequest.model_validate(create_payload),
+            ctx=ctx,
+            session=session,
+            storage=storage,
+            settings=settings,
+            idempotency_key=None,
+        )
+        await idem_repo.complete(
+            record_id=idem_record.id,
+            response_status=status.HTTP_201_CREATED,
+            response_body=response,
+            resource_id=UUID(response["id"]),
+        )
+        return response
+    except Exception:
+        for asset_id in imported_ids:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    storage.delete_asset_objects,
+                    user_id=str(ctx.user_id),
+                    asset_id=asset_id,
+                )
+        raise
 
 
 @router.post("/batch-delete-preview", response_model=dict)

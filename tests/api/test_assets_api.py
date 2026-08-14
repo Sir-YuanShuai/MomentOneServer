@@ -591,6 +591,17 @@ class FakeStorage(ObjectStorage):
         except KeyError:
             raise KeyError(f"blob not found: {user_id}/{asset_id}") from None
 
+    def put_object_bytes(
+        self, *, user_id: str, asset_id: str, data: bytes, content_type: str
+    ) -> None:
+        self.seed_object(
+            user_id=user_id,
+            asset_id=asset_id,
+            size=len(data),
+            content_type=content_type,
+            data=data,
+        )
+
     def put_thumbnail(
         self,
         *,
