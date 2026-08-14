@@ -67,3 +67,15 @@ def test_web_push_endpoint_hosts_accept_comma_separated_value(
         "fcm.googleapis.com",
         "web.push.apple.com",
     ]
+
+
+def test_gpt_action_oauth_requires_client_id_and_secret_together() -> None:
+    with pytest.raises(ValidationError, match="gpt_action_client_id"):
+        Settings(env="test", gpt_action_client_id="chatgpt-action")
+
+    configured = Settings(
+        env="test",
+        gpt_action_client_id="chatgpt-action",
+        gpt_action_client_secret="secret-value",
+    )
+    assert configured.gpt_action_client_id == "chatgpt-action"

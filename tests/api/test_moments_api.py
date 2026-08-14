@@ -666,6 +666,53 @@ async def test_create_moment_idempotency(app: FastAPI, fake_repos: dict[str, Any
 
 
 @pytest.mark.asyncio
+async def test_create_moment_from_openai_files_is_unattended_and_idempotent(
+    app: FastAPI, fake_repos: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import_calls: list[list[str]] = []
+
+    async def _fake_import(refs: list[Any], **kwargs: Any) -> list[str]:
+        import_calls.append([ref.id for ref in refs])
+        asset = await fake_repos["asset"].create(
+            user_id=USER_ID,
+            kind=AssetKind.IMAGE,
+            content_type="image/jpeg",
+            size_bytes=4,
+        )
+        await fake_repos["asset"].mark_ready(
+            asset.id, USER_ID, size_bytes=4, checksum_sha256="0" * 64
+        )
+        return [str(asset.id)]
+
+    monkeypatch.setattr(moments_routes, "_import_openai_files", _fake_import)
+    payload: dict[str, Any] = {
+        "title": "带图记录",
+        "openaiFileIdRefs": [
+            {
+                "name": "photo.jpg",
+                "id": "file-stable-123",
+                "mime_type": "image/jpeg",
+                "download_link": "https://files.oaiusercontent.com/temporary-one",
+            }
+        ],
+    }
+    headers = {"Idempotency-Key": "openai-file-key-001"}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post("/v1/moments/from-openai-files", json=payload, headers=headers)
+        payload["openaiFileIdRefs"][0]["download_link"] = (
+            "https://files.oaiusercontent.com/temporary-two"
+        )
+        replay = await client.post("/v1/moments/from-openai-files", json=payload, headers=headers)
+
+    assert first.status_code == 201
+    assert replay.status_code == 201
+    assert first.json()["id"] == replay.json()["id"]
+    assert len(first.json()["media"]) == 1
+    assert import_calls == [["file-stable-123"]]
+
+
+@pytest.mark.asyncio
 async def test_create_moment_idempotency_conflict(app: FastAPI, fake_repos: dict[str, Any]) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

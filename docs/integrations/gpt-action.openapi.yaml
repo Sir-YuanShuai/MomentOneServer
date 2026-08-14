@@ -1,0 +1,111 @@
+openapi: 3.1.0
+info:
+  title: Moment One GPT Attachment Action
+  version: 1.0.0
+  description: 从 GPT 对话创建 Moment，并无感导入 Agent 选择的相关会话附件。
+servers:
+  - url: https://moment-one-api.yuanshuai.fun
+paths:
+  /v1/moments/from-openai-files:
+    post:
+      operationId: createMomentFromConversationFiles
+      summary: 创建 Moment，并自动保存与本次记录直接相关的会话附件
+      description: >-
+        当用户明确要求记录，且当前或此前对话中的文件适合作为本次记录的内容或证据时调用。
+        Agent 自主选择相关文件放入 openaiFileIdRefs；不相关文件不要带入，也不要要求用户重复上传。
+        上传与关联是内部过程，只向用户报告最终记录结果。
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 每次逻辑创建生成一个稳定且唯一的幂等键，重试时保持不变。
+          schema:
+            type: string
+            minLength: 8
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMomentFromConversationFiles'
+      responses:
+        '201':
+          description: Moment 已创建；media 是最终成功关联的附件。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: 参数、附件来源或幂等键无效。
+        '401':
+          description: 用户需要登录 Moment One。
+        '413':
+          description: 附件超过用户套餐或系统限制。
+        '415':
+          description: 附件类型不受支持。
+        '422':
+          description: 临时附件已过期、无法下载或内容校验失败。
+components:
+  schemas:
+    OpenAIFileReference:
+      type: object
+      required: [name, id, mime_type, download_link]
+      properties:
+        name:
+          type: string
+        id:
+          type: string
+        mime_type:
+          type: string
+        download_link:
+          type: string
+          format: uri
+    CreateMomentFromConversationFiles:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 20
+        description:
+          type: string
+          maxLength: 240
+        category:
+          type: string
+          default: experience
+        tags:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+        persons:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+        event:
+          type: string
+          maxLength: 50
+        occurredAt:
+          type: string
+          format: date-time
+          description: 事件实际发生时间；不是提醒时间或创建时间。
+        timezone:
+          type: string
+          default: UTC
+        type:
+          type: string
+          default: general
+        payload:
+          type: object
+          additionalProperties: true
+        openaiFileIdRefs:
+          type: array
+          maxItems: 10
+          description: >-
+            ChatGPT 自动提供的会话文件引用。只放入 Agent 判断与本次 Moment 直接相关的文件；
+            可以选择用户在此前消息中发送的文件，无相关文件时传空数组。
+          items:
+            $ref: '#/components/schemas/OpenAIFileReference'

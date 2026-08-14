@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     s3_upload_url_ttl_seconds: int = Field(default=600, ge=60, le=3600)
     s3_download_url_ttl_seconds: int = Field(default=300, ge=60, le=3600)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    # ChatGPT Actions 会把会话附件作为短期下载 URL 注入 openaiFileIdRefs。
+    # 这里只允许受信任的 OpenAI 文件域，禁止把接口变成通用 URL 抓取器。
+    openai_attachment_allowed_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["files.oaiusercontent.com"]
+    )
 
     # ---- Notification worker ----
     notification_worker_enabled: bool = False
@@ -108,6 +113,9 @@ class Settings(BaseSettings):
     # MCP Apps 静态资源由 MomentOneWeb/CDN 托管；公开 URL，不含密钥。
     mcp_apps_asset_base_url: str = "https://moment-one.yuanshuai.fun/mcp-apps"
     mcp_apps_version: str = "v1"
+    # Custom GPT Action 的固定 confidential OAuth client。两项必须同时配置。
+    gpt_action_client_id: str | None = None
+    gpt_action_client_secret: str | None = None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -133,6 +141,13 @@ class Settings(BaseSettings):
     @field_validator("web_push_allowed_endpoint_hosts", mode="before")
     @classmethod
     def parse_web_push_hosts(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [host.strip().lower() for host in value.split(",") if host.strip()]
+        return value
+
+    @field_validator("openai_attachment_allowed_hosts", mode="before")
+    @classmethod
+    def parse_openai_attachment_hosts(cls, value: object) -> object:
         if isinstance(value, str):
             return [host.strip().lower() for host in value.split(",") if host.strip()]
         return value
@@ -202,6 +217,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "casdoor_management_client_id and casdoor_management_client_secret "
                 "must be configured together"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_gpt_action_oauth(self) -> "Settings":
+        if bool(self.gpt_action_client_id) != bool(self.gpt_action_client_secret):
+            raise ValueError(
+                "gpt_action_client_id and gpt_action_client_secret must be configured together"
             )
         return self
 

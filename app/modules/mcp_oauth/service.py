@@ -266,13 +266,14 @@ class MomentOAuthService:
         resource: str | None = None,
     ) -> str:
         """校验客户端与参数，创建 casdoor_txn，返回 Casdoor 授权页 URL。"""
+        is_gpt_action = self._is_gpt_action_client(client_id)
         if code_challenge_method not in (None, "S256"):
             raise ApplicationError(
                 code="INVALID_REQUEST",
                 message="仅支持 code_challenge_method=S256。",
                 status_code=400,
             )
-        if not code_challenge:
+        if not code_challenge and not is_gpt_action:
             raise ApplicationError(
                 code="INVALID_REQUEST",
                 message="PKCE 必需：缺少 code_challenge。",
@@ -280,13 +281,20 @@ class MomentOAuthService:
             )
 
         client = await self._clients.get_by_client_id(client_id)
-        if client is None or client.status != "active":
+        if not is_gpt_action and (client is None or client.status != "active"):
             raise ApplicationError(
                 code="INVALID_CLIENT",
                 message="未知或已停用的 client_id。",
                 status_code=401,
             )
-        if redirect_uri not in (client.redirect_uris or []):
+        if is_gpt_action:
+            if not self.is_gpt_action_redirect_uri(redirect_uri):
+                raise ApplicationError(
+                    code="INVALID_REDIRECT_URI",
+                    message="redirect_uri 不是合法的 ChatGPT Action 回调地址。",
+                    status_code=400,
+                )
+        elif client is not None and redirect_uri not in (client.redirect_uris or []):
             raise ApplicationError(
                 code="INVALID_REDIRECT_URI",
                 message="redirect_uri 未注册。",
@@ -316,6 +324,24 @@ class MomentOAuthService:
             state=casdoor_state,
             code_verifier=casdoor_verifier,
             redirect_uri=self._casdoor_callback_uri(),
+        )
+
+    def _is_gpt_action_client(self, client_id: str) -> bool:
+        configured = self._settings.gpt_action_client_id
+        return bool(configured and secrets.compare_digest(client_id, configured))
+
+    @staticmethod
+    def is_gpt_action_redirect_uri(redirect_uri: str) -> bool:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(redirect_uri)
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname in {"chat.openai.com", "chatgpt.com"}
+            and parsed.path.startswith("/aip/g-")
+            and parsed.path.endswith("/oauth/callback")
+            and not parsed.query
+            and not parsed.fragment
         )
 
     def _casdoor_callback_uri(self) -> str:
@@ -458,6 +484,7 @@ class MomentOAuthService:
         code: str,
         code_verifier: str,
         redirect_uri: str | None,
+        client_secret: str | None = None,
     ) -> TokenResponse:
         """客户端用授权码 + PKCE verifier 换我方 RS256 token。"""
         record = await self._codes.get_by_code(code)
@@ -490,7 +517,15 @@ class MomentOAuthService:
                 message="授权码缺少用户绑定。",
                 status_code=400,
             )
-        if not _verify_pkce(code_verifier, record.code_challenge or ""):
+        if self._is_gpt_action_client(client_id):
+            expected_secret = self._settings.gpt_action_client_secret or ""
+            if not client_secret or not secrets.compare_digest(client_secret, expected_secret):
+                raise ApplicationError(
+                    code="INVALID_CLIENT",
+                    message="GPT Action client_secret 无效。",
+                    status_code=401,
+                )
+        elif not _verify_pkce(code_verifier, record.code_challenge or ""):
             raise ApplicationError(
                 code="INVALID_GRANT",
                 message="PKCE code_verifier 校验失败。",

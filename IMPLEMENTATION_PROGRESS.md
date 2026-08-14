@@ -117,6 +117,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | GET | `/v1/system/health` | 已实现 | 健康检查 |
 | GET | `/v1/system/version` | 已实现 | 版本信息 |
 | POST | `/v1/moments` | 已实现 | 创建 Moment（支持 assetIds 关联媒体） |
+| POST | `/v1/moments/from-openai-files` | 已实现 | GPT Actions 会话附件无感导入、ready Asset 创建与 Moment 原子关联；按稳定 file ID 幂等 |
 | GET | `/v1/moments` | 已实现 | 列表查询（cursor 分页，支持 type/category/tag/goalId 过滤，响应含 media 数组） |
 | GET | `/v1/moments/{id}` | 已实现 | 详情（含 media 数组 + downloadUrl） |
 | POST/GET | `/v1/data/bookkeeping/*` | 已实现 | Excel 结构识别、批量导入、完整导出、分类清空（两阶段确认） |
@@ -196,7 +197,7 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Admin Operations | `app/modules/admin/` + `app/api/routes/admin.py` | 已实现（概览、用户、设备/MCP 授权、审计、过期记录 Preview + Confirm） |
 | Audit | `app/modules/audit/` | 已实现只追加写入与管理员只读查询 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
-| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
+| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + GPT 会话附件受信任域服务端导入 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
 | Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 | Quota Metering / Usage Analytics | `app/modules/quotas/` + `app/modules/mcp/quota_middleware.py` + `app/modules/admin/analytics.py` | 第二批已实现（MCP Tool/写 Tool/Planner/API 请求计量、Scope+Entitlement+Quota 工具过滤、设备/MCP客户端上限、用户与管理员用量视图） |
 | Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |
