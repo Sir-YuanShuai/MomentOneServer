@@ -2,10 +2,11 @@ from typing import Any
 from uuid import UUID
 
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
 from mcp.types import ListToolsResult
 
-from app.modules.mcp.deps import McpToolEnv
+from app.modules.mcp.deps import GLASSES_ONLY_TOOLS, McpToolEnv
 
 
 class McpToolVisibilityMiddleware:
@@ -19,30 +20,50 @@ class McpToolVisibilityMiddleware:
         ctx: ServerRequestContext[Any, Any],
         call_next: CallNext,
     ) -> HandlerResult:
+        token = get_access_token() if ctx.method == "tools/list" else None
+        request_user = getattr(ctx.request, "user", None)
+        if token is None and isinstance(request_user, AuthenticatedUser):
+            # Streamable HTTP may dispatch the MCP message in a child task where
+            # the ASGI auth ContextVar is no longer present. The verified user is
+            # retained on the request scope and is the authoritative fallback.
+            token = request_user.access_token
         result = await call_next(ctx)
-        if ctx.method != "tools/list" or not isinstance(result, ListToolsResult):
+        if ctx.method != "tools/list" or not isinstance(result, (ListToolsResult, dict)):
             return result
-        token = get_access_token()
         if token is None or not token.subject:
-            result.tools = []
+            if isinstance(result, dict):
+                result["tools"] = []
+            else:
+                result.tools = []
             return result
         try:
             user_id = UUID(token.subject)
         except (TypeError, ValueError):
-            result.tools = []
+            if isinstance(result, dict):
+                result["tools"] = []
+            else:
+                result.tools = []
             return result
         visible = await self._env.visible_tool_names(user_id, tuple(token.scopes or []))
         claims = token.claims or {}
         is_glasses = claims.get("method") == "glasses"
-        glasses_only = {"bookkeeping_plan", "agent_plan", "a2ui_action"}
         if not is_glasses:
-            visible = visible - glasses_only
-        result.tools = [tool for tool in result.tools if tool.name in visible]
+            visible = visible - GLASSES_ONLY_TOOLS
+        if isinstance(result, dict):
+            filtered_tools: list[Any] = [
+                tool
+                for tool in result.get("tools", [])
+                if isinstance(tool, dict) and tool.get("name") in visible
+            ]
+            result["tools"] = filtered_tools
+        else:
+            result.tools = [tool for tool in result.tools if tool.name in visible]
+            filtered_tools = result.tools
         if is_glasses:
             # 眼镜只消费 A2UI，不能收到 MCP Apps 的 ui:// 模板绑定。
-            for tool in result.tools:
-                if not tool.meta:
-                    continue
-                tool.meta.pop("ui", None)
-                tool.meta.pop("openai/outputTemplate", None)
+            for tool in filtered_tools:
+                meta = tool.get("_meta") if isinstance(tool, dict) else tool.meta
+                if meta:
+                    meta.pop("ui", None)
+                    meta.pop("openai/outputTemplate", None)
         return result
