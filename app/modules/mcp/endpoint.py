@@ -52,6 +52,7 @@ class McpComponent:
                 object_storage=storage,
                 max_upload_bytes=settings.max_upload_bytes,
                 upload_url_ttl_seconds=settings.s3_upload_url_ttl_seconds,
+                remote_attachment_allowed_hosts=tuple(settings.openai_attachment_allowed_hosts),
             )
         else:
             self.env = env

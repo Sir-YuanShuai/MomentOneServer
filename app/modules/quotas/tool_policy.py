@@ -35,4 +35,5 @@ TOOL_POLICIES: dict[str, ToolPolicy] = {
         "moments.write", entitlement="media.upload", write=True
     ),
     "asset_upload_complete": ToolPolicy("moments.write", entitlement="media.upload", write=True),
+    "asset_import_from_url": ToolPolicy("moments.write", entitlement="media.upload", write=True),
 }

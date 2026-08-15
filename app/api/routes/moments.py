@@ -1,11 +1,8 @@
 import asyncio
 import contextlib
-import hashlib
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-import httpx
 from fastapi import APIRouter, Depends, Header, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,8 +39,12 @@ from app.infrastructure.storage.object_storage import (
     ObjectStorageNotConfigured,
     get_object_storage,
 )
-from app.modules.assets.domain import AssetRole, AssetState, infer_kind
-from app.modules.entitlements.repository import EntitlementRepository
+from app.modules.assets.domain import AssetRole, AssetState
+from app.modules.assets.remote_import import (
+    RemoteAttachmentReference,
+    import_remote_attachments,
+    validate_remote_attachment_url,
+)
 from app.modules.moment_types.registry import validate as validate_moment_type
 from app.modules.moments.domain import (
     LocationSource,
@@ -375,21 +376,7 @@ class CursorPageResponse(BaseModel):
 
 
 def validate_openai_download_url(url: str, settings: Settings) -> None:
-    parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower().rstrip(".")
-    allowed = {item.lower().rstrip(".") for item in settings.openai_attachment_allowed_hosts}
-    if parsed.scheme != "https" or not host or host not in allowed:
-        raise ApplicationError(
-            code="UNTRUSTED_ATTACHMENT_SOURCE",
-            message="附件来源不是受信任的 OpenAI 文件服务。",
-            status_code=400,
-        )
-    if parsed.username or parsed.password or parsed.port not in (None, 443):
-        raise ApplicationError(
-            code="UNTRUSTED_ATTACHMENT_SOURCE",
-            message="附件下载地址格式无效。",
-            status_code=400,
-        )
+    validate_remote_attachment_url(url, settings.openai_attachment_allowed_hosts)
 
 
 async def _import_openai_files(
@@ -401,100 +388,26 @@ async def _import_openai_files(
     settings: Settings,
 ) -> list[str]:
     """下载 ChatGPT 短期附件并转存为 ready Asset；不向用户暴露中间状态。"""
-    imported: list[str] = []
-    quota = EntitlementRepository(session)
-    asset_repo = AssetRepository(session)
-    plan_limit = await quota.max_upload_bytes(user_id)
-    max_bytes = min(settings.max_upload_bytes, plan_limit or settings.max_upload_bytes)
-
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(30, connect=10), follow_redirects=False
-    ) as client:
-        for ref in refs:
-            validate_openai_download_url(ref.download_link, settings)
-            kind = infer_kind(ref.mime_type)
-            if kind is None:
-                raise ApplicationError(
-                    code="MEDIA_TYPE_NOT_ALLOWED",
-                    message=f"不支持的附件类型：{ref.mime_type}",
-                    status_code=415,
-                )
-            try:
-                async with client.stream("GET", ref.download_link) as response:
-                    response.raise_for_status()
-                    response_type = response.headers.get("content-type", "").split(";", 1)[0]
-                    if response_type and response_type.lower() != ref.mime_type.lower():
-                        raise ApplicationError(
-                            code="MEDIA_UPLOAD_MISMATCH",
-                            message="ChatGPT 附件类型与声明不一致。",
-                            status_code=422,
-                        )
-                    content_length = response.headers.get("content-length")
-                    if content_length and int(content_length) > max_bytes:
-                        raise ApplicationError(
-                            code="MEDIA_TOO_LARGE",
-                            message=f"附件大小超过上限 {max_bytes} 字节。",
-                            status_code=413,
-                        )
-                    payload = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        payload.extend(chunk)
-                        if len(payload) > max_bytes:
-                            raise ApplicationError(
-                                code="MEDIA_TOO_LARGE",
-                                message=f"附件大小超过上限 {max_bytes} 字节。",
-                                status_code=413,
-                            )
-            except ApplicationError:
-                raise
-            except (httpx.HTTPError, ValueError) as exc:
-                raise ApplicationError(
-                    code="ATTACHMENT_IMPORT_FAILED",
-                    message="无法从 ChatGPT 临时文件地址导入附件。",
-                    status_code=422,
-                ) from exc
-
-            if not payload:
-                raise ApplicationError(
-                    code="ATTACHMENT_IMPORT_FAILED",
-                    message="ChatGPT 附件内容为空。",
-                    status_code=422,
-                )
-            await quota.reserve_upload(user_id, len(payload))
-            asset = await asset_repo.create(
-                user_id=user_id,
-                kind=kind,
-                content_type=ref.mime_type.lower(),
-                size_bytes=len(payload),
+    imported = await import_remote_attachments(
+        [
+            RemoteAttachmentReference(
+                name=ref.name,
+                external_id=ref.id,
+                mime_type=ref.mime_type,
+                download_url=ref.download_link,
             )
-            await asyncio.to_thread(
-                storage.put_object_bytes,
-                user_id=str(user_id),
-                asset_id=str(asset.id),
-                data=bytes(payload),
-                content_type=ref.mime_type.lower(),
-            )
-            await asset_repo.mark_ready(
-                asset.id,
-                user_id,
-                size_bytes=len(payload),
-                checksum_sha256=hashlib.sha256(payload).hexdigest(),
-            )
-            await quota.complete_upload(
-                user_id, reserved_bytes=len(payload), actual_bytes=len(payload)
-            )
-            await SqlAuditEventRepository(session).append(
-                user_id=user_id,
-                actor_type="mcp",
-                actor_id="chatgpt",
-                event_type="asset.imported",
-                resource_type="asset",
-                resource_id=asset.id,
-                allowed=True,
-                metadata={"provider": "openai", "externalFileId": ref.id},
-            )
-            imported.append(str(asset.id))
-    return imported
+            for ref in refs
+        ],
+        user_id=user_id,
+        session=session,
+        storage=storage,
+        allowed_hosts=settings.openai_attachment_allowed_hosts,
+        configured_max_bytes=settings.max_upload_bytes,
+        actor_type="mcp",
+        actor_id="chatgpt",
+        provider="openai",
+    )
+    return [str(item["assetId"]) for item in imported]
 
 
 @router.get("", response_model=CursorPageResponse)

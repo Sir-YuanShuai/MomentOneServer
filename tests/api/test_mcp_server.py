@@ -567,6 +567,7 @@ async def test_mcp_list_tools_with_qr_binding_token(
         "feedback_submit",
         "asset_upload_intent_create",
         "asset_upload_complete",
+        "asset_import_from_url",
     } <= set(names)
     create = next(t for t in tools if t["name"] == "bookkeeping_create")
     assert "inputSchema" in create
@@ -587,6 +588,14 @@ async def test_mcp_list_tools_with_qr_binding_token(
     }
     upload_complete = next(t for t in tools if t["name"] == "asset_upload_complete")
     assert set(upload_complete["inputSchema"]["required"]) == {"assetId", "idempotencyKey"}
+    url_import = next(t for t in tools if t["name"] == "asset_import_from_url")
+    assert set(url_import["inputSchema"]["required"]) == {
+        "name",
+        "externalId",
+        "mimeType",
+        "downloadUrl",
+        "idempotencyKey",
+    }
     reminder = next(t for t in tools if t["name"] == "reminder_create")
     assert set(reminder["inputSchema"]["required"]) == {"title", "idempotencyKey"}
     assert {"remindAt", "localDateTime", "afterMinutes", "timezone", "dueAt"} <= set(
@@ -634,7 +643,7 @@ async def test_normal_mcp_client_cannot_discover_or_call_glasses_only_tools(
         for name in MCP_APP_TOOL_SPECS
     }
     assert app_resource_uris == {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS}
-    assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 19
+    assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 20
     assert called["result"]["isError"] is True
     assert called["result"]["structuredContent"]["error"]["code"] == ("CLIENT_TYPE_UNSUPPORTED")
 
@@ -1057,7 +1066,7 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
         )
     uris = {resource["uri"] for resource in data["result"]["resources"]}
     assert {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS} <= uris
-    assert len({uri for uri in uris if uri.startswith("ui://moment-one/tools/")}) == 19
+    assert len({uri for uri in uris if uri.startswith("ui://moment-one/tools/")}) == 20
     content = resource["result"]["contents"][0]
     assert content["mimeType"] == "text/html;profile=mcp-app"
     assert "https://web.example.test/mcp-apps/test-v1/assets/bookkeeping.js" in content["text"]

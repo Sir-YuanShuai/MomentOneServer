@@ -169,3 +169,9 @@ class AssetUploadCompleteOutput(OutputModel):
     state: str | None = None
     contentType: str | None = None
     sizeBytes: int | None = None
+
+
+class AssetImportOutput(AssetUploadCompleteOutput):
+    name: str | None = None
+    replayed: bool | None = None
+    usableBy: list[str] | None = None
