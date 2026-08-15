@@ -24,6 +24,7 @@ class MomentItem(OutputModel):
     type: str | None = None
     tags: list[str] = Field(default_factory=list)
     occurredAt: str | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HabitGoal(OutputModel):
@@ -66,6 +67,7 @@ class MomentCreateOutput(OutputModel):
     created: bool | None = None
     replayed: bool | None = None
     moment: MomentItem | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MomentListOutput(OutputModel):
@@ -118,6 +120,7 @@ class HabitCheckinOutput(OutputModel):
     replayed: bool | None = None
     goal: HabitGoal | None = None
     checkin: MomentItem | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HabitProgressOutput(OutputModel):

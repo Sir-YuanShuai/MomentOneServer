@@ -65,6 +65,7 @@ class McpComponent:
             env=self.env,
             apps_asset_base_url=settings.mcp_apps_asset_base_url,
             apps_version=settings.mcp_apps_version,
+            media_base_url=str(settings.s3_endpoint_url) if settings.s3_endpoint_url else None,
             token_verifier=self.verifier,
             auth=AuthSettings(
                 issuer_url=AnyHttpUrl(base),

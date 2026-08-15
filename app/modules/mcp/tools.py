@@ -1080,7 +1080,7 @@ async def _create_typed_moment(
     idempotency_key: str,
     operation: str,
     asset_ids: list[str] | None = None,
-) -> tuple[Moment, bool]:
+) -> tuple[Moment, bool, list[dict]]:
     resolved_title = title.strip()
     if not resolved_title or len(resolved_title) > 20:
         raise ApplicationError(
@@ -1161,7 +1161,7 @@ async def _create_typed_moment(
                 resource_id, ctx.user_id
             )
             if existing is not None:
-                return existing, True
+                return existing, True, await build_ready_asset_media(ctx, asset_ids)
 
     now = datetime.now(UTC)
     moment = Moment(
@@ -1205,7 +1205,49 @@ async def _create_typed_moment(
         response_body=response,
         resource_id=created.id,
     )
-    return created, False
+    return created, False, media
+
+
+async def build_ready_asset_media(ctx: McpCallContext, asset_ids: list[str] | None) -> list[dict]:
+    """Build the final user-facing media payload for already validated assets.
+
+    Transfer tools intentionally stay model-only. The final business tool is
+    therefore responsible for returning enough information for its MCP App to
+    prove that the attachment was linked and to render an image preview.
+    """
+    if not asset_ids:
+        return []
+    repo = AssetRepository(ctx.session)
+    media: list[dict] = []
+    for raw_id in asset_ids:
+        try:
+            asset_id = UUID(raw_id)
+        except (ValueError, TypeError):
+            continue
+        asset = await repo.get_by_id(asset_id, ctx.user_id)
+        if asset is None or asset.state != AssetState.READY:
+            continue
+        entry: dict = {
+            "assetId": str(asset.id),
+            "kind": asset.kind.value,
+            "contentType": asset.content_type,
+            "sizeBytes": asset.size_bytes,
+            "thumbnailUrl": None,
+        }
+        if ctx.object_storage is not None and asset.thumbnail_generated_at is not None:
+            entry["thumbnailUrl"] = ctx.object_storage.create_thumbnail_url(
+                user_id=str(ctx.user_id),
+                asset_id=str(asset.id),
+                expires_in_seconds=ctx.upload_url_ttl_seconds,
+            )
+        if ctx.object_storage is not None:
+            entry["downloadUrl"] = ctx.object_storage.create_download_url(
+                user_id=str(ctx.user_id),
+                asset_id=str(asset.id),
+                expires_in_seconds=ctx.upload_url_ttl_seconds,
+            )
+        media.append(entry)
+    return media
 
 
 async def _attach_ready_assets(
@@ -1221,7 +1263,6 @@ async def _attach_ready_assets(
         )
     assets = AssetRepository(ctx.session)
     links = MomentAssetRepository(ctx.session)
-    media: list[dict] = []
     for position, raw_id in enumerate(asset_ids):
         try:
             asset_id = UUID(raw_id)
@@ -1245,15 +1286,7 @@ async def _attach_ready_assets(
             position=position,
             role=AssetRole.ORIGINAL,
         )
-        media.append(
-            {
-                "assetId": str(asset.id),
-                "kind": asset.kind.value,
-                "contentType": asset.content_type,
-                "sizeBytes": asset.size_bytes,
-            }
-        )
-    return media
+    return await build_ready_asset_media(ctx, asset_ids)
 
 
 async def asset_upload_intent_create(
@@ -1552,7 +1585,7 @@ async def moments_create(
     asset_ids: list[str] | None = None,
 ) -> CallToolResult:
     ctx.require_scope("moments.write")
-    created, replayed = await _create_typed_moment(
+    created, replayed, media = await _create_typed_moment(
         ctx,
         title=title,
         description=description,
@@ -1573,7 +1606,8 @@ async def moments_create(
         "schemaVersion": SCHEMA_VERSION,
         "created": not replayed,
         "replayed": replayed,
-        "moment": _moment_item(created, detail=True),
+        "moment": {**_moment_item(created, detail=True), "media": media},
+        "media": media,
     }
     await _append_tool_audit(
         ctx,
@@ -1581,7 +1615,7 @@ async def moments_create(
         resource_id=created.id,
         metadata={"replayed": replayed, "type": created.moment_type},
     )
-    return _text_result(result)
+    return _tool_result(ctx, "moments_create", result)
 
 
 async def moments_list(
@@ -2089,7 +2123,7 @@ async def habit_checkin_create(
         payload["unit"] = goal.unit
     if count is not None:
         payload["count"] = count
-    created, replayed = await _create_typed_moment(
+    created, replayed, media = await _create_typed_moment(
         ctx,
         title=(f"{goal.name}打卡" if done else f"{goal.name}未完成")[:20],
         description=note,
@@ -2117,7 +2151,8 @@ async def habit_checkin_create(
         "created": not replayed,
         "replayed": replayed,
         "goal": _habit_goal_item(goal),
-        "checkin": _moment_item(created),
+        "checkin": {**_moment_item(created), "media": media},
+        "media": media,
     }
     return _tool_result(ctx, "habit_checkin_create", result)
 
