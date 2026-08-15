@@ -35,12 +35,14 @@ class McpToolEnv:
         object_storage: ObjectStorage | None = None,
         max_upload_bytes: int = 20 * 1024 * 1024,
         upload_url_ttl_seconds: int = 600,
+        remote_attachment_allowed_hosts: tuple[str, ...] = ("files.oaiusercontent.com",),
     ) -> None:
         self._session_factory: SessionFactory = session_factory or _default_session_factory
         self._enforce_quotas = enforce_quotas
         self._object_storage = object_storage
         self._max_upload_bytes = max_upload_bytes
         self._upload_url_ttl_seconds = upload_url_ttl_seconds
+        self._remote_attachment_allowed_hosts = remote_attachment_allowed_hosts
 
     def session(self) -> AbstractAsyncContextManager[AsyncSession]:
         return self._session_factory()
@@ -132,6 +134,7 @@ class McpToolEnv:
                 object_storage=self._object_storage,
                 max_upload_bytes=self._max_upload_bytes,
                 upload_url_ttl_seconds=self._upload_url_ttl_seconds,
+                remote_attachment_allowed_hosts=self._remote_attachment_allowed_hosts,
             )
             try:
                 if policy is not None:

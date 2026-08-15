@@ -54,6 +54,10 @@ from app.infrastructure.database.repositories.notification_repository import (
 from app.infrastructure.database.repositories.user_feedback_repository import UserFeedbackRepository
 from app.infrastructure.storage.object_storage import ObjectStorage
 from app.modules.assets.domain import AssetRole, AssetState, infer_kind
+from app.modules.assets.remote_import import (
+    RemoteAttachmentReference,
+    import_remote_attachments,
+)
 from app.modules.assets.thumbnail import THUMBNAIL_CONTENT_TYPE, generate_thumbnail
 from app.modules.entitlements.repository import EntitlementRepository
 from app.modules.habit_goals.domain import HabitGoal
@@ -117,6 +121,7 @@ class McpCallContext:
     object_storage: ObjectStorage | None = None
     max_upload_bytes: int = 20 * 1024 * 1024
     upload_url_ttl_seconds: int = 600
+    remote_attachment_allowed_hosts: tuple[str, ...] = ("files.oaiusercontent.com",)
 
     def require_scope(self, required: str) -> None:
         if not has_scope(self.scopes, required):
@@ -1446,6 +1451,89 @@ async def asset_upload_complete(
     )
 
 
+async def asset_import_from_url(
+    ctx: McpCallContext,
+    *,
+    name: str,
+    external_id: str,
+    mime_type: str,
+    download_url: str,
+    idempotency_key: str,
+) -> CallToolResult:
+    """Import one host-provided, allow-listed short-lived URL as a ready asset."""
+    ctx.require_scope("moments.write")
+    if ctx.object_storage is None:
+        raise ApplicationError(
+            code="SERVICE_UNAVAILABLE", message="对象存储未配置。", status_code=503
+        )
+    request_body = {"name": name, "externalId": external_id, "mimeType": mime_type}
+    idem_repo = SqlIdempotencyRepository(ctx.session)
+    idem_record = await idem_repo.acquire(
+        user_id=ctx.user_id,
+        operation="asset_import_from_url",
+        idempotency_key=idempotency_key,
+        request_payload=request_body,
+    )
+    if idem_record.request_fingerprint != fingerprint_payload(request_body):
+        raise ApplicationError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="idempotencyKey 已用于不同的附件导入。",
+            status_code=409,
+        )
+    if idem_record.state == "completed" and idem_record.resource_id is not None:
+        existing = await AssetRepository(ctx.session).get_by_id(
+            idem_record.resource_id, ctx.user_id
+        )
+        if existing is not None and existing.state == AssetState.READY:
+            return _text_result(
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "assetId": str(existing.id),
+                    "state": "ready",
+                    "kind": existing.kind.value,
+                    "contentType": existing.content_type,
+                    "sizeBytes": existing.size_bytes,
+                    "replayed": True,
+                    "usableBy": [
+                        "moments_create",
+                        "habit_checkin_create",
+                        "bookkeeping_create",
+                    ],
+                }
+            )
+    imported = await import_remote_attachments(
+        [
+            RemoteAttachmentReference(
+                name=name,
+                external_id=external_id,
+                mime_type=mime_type,
+                download_url=download_url,
+            )
+        ],
+        user_id=ctx.user_id,
+        session=ctx.session,
+        storage=ctx.object_storage,
+        allowed_hosts=ctx.remote_attachment_allowed_hosts,
+        configured_max_bytes=ctx.max_upload_bytes,
+        actor_type=ctx.method,
+        actor_id=ctx.actor_id,
+        provider="mcp-host",
+    )
+    result = {
+        "schemaVersion": SCHEMA_VERSION,
+        **imported[0],
+        "replayed": False,
+        "usableBy": ["moments_create", "habit_checkin_create", "bookkeeping_create"],
+    }
+    await idem_repo.complete(
+        record_id=idem_record.id,
+        response_status=201,
+        response_body=result,
+        resource_id=UUID(str(imported[0]["assetId"])),
+    )
+    return _text_result(result)
+
+
 async def moments_create(
     ctx: McpCallContext,
     *,
@@ -2533,6 +2621,7 @@ __all__ = [
     "habit_progress",
     "asset_upload_intent_create",
     "asset_upload_complete",
+    "asset_import_from_url",
     "feedback_submit",
     "reminder_create",
     "agent_plan",

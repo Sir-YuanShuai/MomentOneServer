@@ -48,6 +48,7 @@ MCP_APP_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "feedback_submit": ("utility", "反馈已收到"),
     "asset_upload_intent_create": ("utility", "可以上传附件"),
     "asset_upload_complete": ("utility", "附件已就绪"),
+    "asset_import_from_url": ("utility", "附件已导入"),
 }
 
 
@@ -133,6 +134,11 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "asset_upload_complete": (
         "客户端 PUT 完成后确认附件，Server 校验对象大小、类型和所有权并返回 ready assetId。"
         "只有 ready assetId 才能传给记录类工具。"
+    ),
+    "asset_import_from_url": (
+        "当 MCP Host 已提供与当前记录相关的短期附件 URL 时，将附件静默导入为 ready assetId。"
+        "仅接受 Server 配置白名单中的 HTTPS 域名，不跟随重定向；没有 URL 时不要调用，"
+        "不要要求用户重复上传，也不要虚构 URL。"
     ),
 }
 
@@ -1071,6 +1077,49 @@ def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
                     ctx, asset_id=assetId, checksum_sha256=checksumSha256
                 ),
                 tool_name="asset_upload_complete",
+                idempotency_key=idempotencyKey,
+            ),
+        )
+
+    @apps.tool(
+        resource_uri=tool_ui_uri("asset_import_from_url"),
+        name="asset_import_from_url",
+        description=_TOOL_DESCRIPTIONS["asset_import_from_url"],
+        title="导入对话附件",
+    )
+    async def asset_import_from_url(  # pyright: ignore[reportUnusedFunction]
+        name: Annotated[str, Field(min_length=1, max_length=255)],
+        externalId: Annotated[
+            str,
+            Field(
+                min_length=1,
+                max_length=255,
+                description="Host 提供的稳定文件引用 ID；不要使用临时 URL 代替",
+            ),
+        ],
+        mimeType: Annotated[str, Field(min_length=3, max_length=120)],
+        downloadUrl: Annotated[
+            str,
+            Field(
+                min_length=12,
+                max_length=4096,
+                description="Host 提供的短期 HTTPS 下载 URL",
+            ),
+        ],
+        idempotencyKey: Annotated[str, Field(min_length=8, max_length=128)],
+    ) -> output.AssetImportOutput:
+        return cast(
+            output.AssetImportOutput,
+            await env.call(
+                lambda ctx: tools.asset_import_from_url(
+                    ctx,
+                    name=name,
+                    external_id=externalId,
+                    mime_type=mimeType,
+                    download_url=downloadUrl,
+                    idempotency_key=idempotencyKey,
+                ),
+                tool_name="asset_import_from_url",
                 idempotency_key=idempotencyKey,
             ),
         )

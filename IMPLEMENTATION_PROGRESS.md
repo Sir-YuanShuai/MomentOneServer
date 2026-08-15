@@ -190,14 +190,14 @@ Phase 2 部分：设备绑定（Device Binding）+ OAuth 2.1 Token 端点（眼�
 | Identity 认证 | `app/modules/identity/` + `app/infrastructure/identity/casdoor.py` | 已实现（Casdoor isAdmin / 应用角色 / 权限归一化；暂停账号全通道阻断） |
 | Device Binding | `app/modules/devices/` + `app/infrastructure/jwt/issuer.py` + `app/infrastructure/binding_codes/generator.py` + `app/infrastructure/database/repositories/device_repository.py` | 已实现 |
 | Search | `app/modules/search/` | 骨架 |
-| MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；Moment；习惯每日/每周/每月目标、修改、打卡、精确进度和关联提醒；两阶段附件直传与 ready assetIds 引用；反馈收集；设备身份级 Apps/A2UI 分流；工具级 Scope + 审计） |
+| MCP Server | `app/modules/mcp/`（server/tools/a2ui/token_verifier/deps/endpoint）+ `app/api/routes/mcp_discovery.py` | 已实现（记账；Moment；习惯每日/每周/每月目标、修改、打卡、精确进度和关联提醒；两阶段附件直传、Host 临时 URL 白名单导入与 ready assetIds 引用；反馈收集；设备身份级 Apps/A2UI 分流；工具级 Scope + 审计） |
 | MCP OAuth 代理 | `app/modules/mcp_oauth/` + `app/api/routes/mcp_oauth.py`（authorize/callback/register）+ `app/api/routes/oauth.py` token 扩展 | 已实现（DCR RFC 7591 + PKCE + Casdoor 代理跳转；token 复用 JwtIssuer RS256） |
-| MCP Apps UI | Server `app/modules/mcp/server.py` 轻量壳；源码/静态 bundle 位于 `MomentOneWeb/src/mcp-apps/` 与 `/mcp-apps/v1/` | 已实现 4 类紧凑结果卡：`bookkeeping` / `timeline` / `habits` / `utility`；全部普通 MCP 查询和可视化写操作均绑定对应 UI，眼镜专用 Planner/A2UI Action 保持原生 A2UI；Server 不携带或代理完整 bundle，`ui://` 壳通过 CSP 允许 Web 静态 origin |
+| MCP Apps UI | Server `app/modules/mcp/server.py` 轻量壳；源码/静态 bundle 位于 `MomentOneWeb/src/mcp-apps/` 与 `/mcp-apps/v1/` | 已实现 4 类紧凑结果卡：`bookkeeping` / `timeline` / `habits` / `utility`；20 个普通 MCP 查询和可视化写操作均绑定独立 UI，眼镜专用 Planner/A2UI Action 保持原生 A2UI；Server 不携带或代理完整 bundle，`ui://` 壳通过 CSP 允许 Web 静态 origin |
 | A2UI over MCP | `app/modules/mcp/a2ui.py` + `contracts/a2ui/` | 已实现 Server 侧 v0.9 capability negotiation、官方 Schema/Catalog 固定、9 个紧凑结果卡 builder、校验失败文本降级与标准 Tool Result fixture；实际眼镜客户端代码 standalone 联调已通过，未提交/未部署，等待真机 AIUI 页面联调 |
 | Admin Operations | `app/modules/admin/` + `app/api/routes/admin.py` | 已实现（概览、用户、设备/MCP 授权、审计、过期记录 Preview + Confirm） |
 | Audit | `app/modules/audit/` | 已实现只追加写入与管理员只读查询 |
 | Confirmations | `app/modules/confirmations/` | 已实现（持久化，集成在 moments 路由） |
-| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + GPT 会话附件受信任域服务端导入 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
+| Media / Assets | `app/modules/assets/` + `app/infrastructure/storage/object_storage.py` + `app/infrastructure/database/repositories/asset_repository.py` + `app/api/routes/assets.py` | 已实现（S3/MinIO 适配 + Asset 状态机 + Moment 创建/更新媒体关联 + GPT Action/MCP Host 临时附件受信任域服务端导入 + 稳定版本快照 + 缩略图生成（迁移 0017，仅 image，400px WebP，失败降级）+ Upload Intent 存储额度预留/完成结算（迁移 0019）） |
 | Entitlements / Storage Quota | `app/modules/entitlements/` + `app/modules/admin/entitlements.py` | 第一批已实现（Free/Plus/Pro 计划、用户权益、存储账户、额度 Grant、overQuota、管理员套餐/额度/对账 API） |
 | Quota Metering / Usage Analytics | `app/modules/quotas/` + `app/modules/mcp/quota_middleware.py` + `app/modules/admin/analytics.py` | 第二批已实现（MCP Tool/写 Tool/Planner/API 请求计量、Scope+Entitlement+Quota 工具过滤、设备/MCP客户端上限、用户与管理员用量视图） |
 | Account Self-service | `app/api/routes/account.py` + `app/modules/account_deletion/` | 已实现（账号快照、应用偏好、头像业务存储同步、联系方式验证、身份绑定保护和注销；普通资料/密码/MFA/会话由 Web 使用用户 Token 直连 Casdoor） |

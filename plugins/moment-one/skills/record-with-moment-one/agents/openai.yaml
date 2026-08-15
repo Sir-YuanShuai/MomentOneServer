@@ -1,0 +1,4 @@
+interface:
+  display_name: "记录到 Moment One"
+  short_description: "Record and review your life with Moment One"
+  default_prompt: "Use $record-with-moment-one to record or review this information."

@@ -1,0 +1,29 @@
+{
+  "name": "moment-one",
+  "version": "0.1.0",
+  "description": "Record, review, and understand personal moments, bookkeeping, habits, and reminders with Moment One.",
+  "author": {
+    "name": "Moment One",
+    "url": "https://moment-one.yuanshuai.fun"
+  },
+  "homepage": "https://moment-one.yuanshuai.fun",
+  "keywords": ["memory", "bookkeeping", "habits", "reminders", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Moment One",
+    "shortDescription": "记录、查询和回顾生活、记账、习惯与提醒",
+    "longDescription": "Moment One 将生活记录、记账、习惯目标、提醒和用户反馈整合到同一个经过 OAuth 授权的 MCP 应用中，并为支持 MCP Apps 的对话提供交互式结果卡。",
+    "developerName": "Moment One",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://moment-one.yuanshuai.fun",
+    "privacyPolicyURL": "https://moment-one.yuanshuai.fun/privacy/",
+    "defaultPrompt": [
+      "记录我刚才说的事情，需要时带上相关附件。",
+      "总结我这个月的收支并展示分类图表。",
+      "查看我的习惯目标和最近完成情况。"
+    ],
+    "brandColor": "#111827"
+  },
+  "apps": "./.app.json"
+}
