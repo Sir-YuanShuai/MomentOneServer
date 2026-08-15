@@ -43,6 +43,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import HttpUrl
 
 USER_ID = UUID("11111111-1111-4111-8111-111111111111")
 BINDING_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -102,6 +103,7 @@ def _make_settings(tmp_path: Path) -> Settings:
         mcp_base_url="http://testserver",
         mcp_apps_asset_base_url="https://web.example.test/mcp-apps",
         mcp_apps_version="test-v1",
+        s3_endpoint_url=HttpUrl("https://storage.example.test"),
     )
 
 
@@ -1079,7 +1081,7 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
     assert len(content["text"]) < 2048
     assert content["_meta"]["ui"]["csp"]["resourceDomains"] == [
         "https://web.example.test",
-        "https://storage.yuanshuai.fun",
+        "https://storage.example.test",
     ]
 
 
