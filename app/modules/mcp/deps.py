@@ -192,6 +192,12 @@ class McpToolEnv:
                 )
                 result = await fn(ctx)
                 await session.commit()
+                await logger.ainfo(
+                    "mcp_tool_succeeded",
+                    tool_name=tool_name,
+                    user_id=str(user_id),
+                    request_id=ctx.request_id,
+                )
                 return result
             except ApplicationError as exc:
                 await session.rollback()

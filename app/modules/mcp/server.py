@@ -3,7 +3,8 @@
 - Streamable HTTP（`POST /mcp`，挂载见 application.py）
 - Bearer 鉴权由 `BearerAuthBackend(MomentTokenVerifier)` + `RequireAuthMiddleware` 处理
 - 工具：记账 + 通用 Moment + 每日回顾 + 习惯目标/打卡
-- MCP Apps：每个普通工具拥有独立 ui:// 壳，同业务域复用渲染内核
+- MCP Apps：每个面向用户的业务工具拥有独立 ui:// 壳，同业务域复用渲染内核；
+  附件传输工具保持 model-only，避免向用户暴露中间过程
 """
 
 from __future__ import annotations
@@ -46,9 +47,6 @@ MCP_APP_TOOL_SPECS: dict[str, tuple[str, str]] = {
     "account_entitlements": ("utility", "账号额度"),
     "reminder_create": ("utility", "提醒已创建"),
     "feedback_submit": ("utility", "反馈已收到"),
-    "asset_upload_intent_create": ("utility", "可以上传附件"),
-    "asset_upload_complete": ("utility", "附件已就绪"),
-    "asset_import_from_url": ("utility", "附件已导入"),
 }
 
 
@@ -187,6 +185,7 @@ def build_mcp_server(
     env: McpToolEnv,
     apps_asset_base_url: str = "https://moment-one.yuanshuai.fun/mcp-apps",
     apps_version: str = "v1",
+    media_base_url: str | None = None,
     token_verifier: TokenVerifier | None = None,
     auth: AuthSettings | None = None,
 ) -> MCPServer:
@@ -202,13 +201,19 @@ def build_mcp_server(
     _register_account_entitlements(apps, env)
     _register_reminder_create(apps, env)
     _register_feedback_submit(apps, env)
-    _register_asset_tools(apps, env)
     asset_root = f"{apps_asset_base_url.rstrip('/')}/{apps_version.strip('/')}"
     parsed_asset_root = urlparse(asset_root)
     if parsed_asset_root.scheme not in {"http", "https"} or not parsed_asset_root.netloc:
         raise ValueError("MCP Apps asset base URL 必须是带 origin 的 HTTP(S) URL")
     resource_origin = f"{parsed_asset_root.scheme}://{parsed_asset_root.netloc}"
-    csp = ResourceCsp(resource_domains=[resource_origin])
+    resource_domains = [resource_origin]
+    if media_base_url:
+        parsed_media = urlparse(media_base_url)
+        if parsed_media.scheme == "https" and parsed_media.netloc:
+            media_origin = f"{parsed_media.scheme}://{parsed_media.netloc}"
+            if media_origin not in resource_domains:
+                resource_domains.append(media_origin)
+    csp = ResourceCsp(resource_domains=resource_domains)
     for tool_name, (renderer, title) in MCP_APP_TOOL_SPECS.items():
         resource_uri = tool_ui_uri(tool_name)
         apps.add_html_resource(
@@ -232,6 +237,7 @@ def build_mcp_server(
         # Must precede extension interceptors: Apps handles tools/list itself.
         middleware=[McpToolVisibilityMiddleware(env)],
     )
+    _register_asset_tools(server, env)
 
     # 非 Apps 绑定工具在 server 构造后注册
     _register_bookkeeping_plan(server, env)
@@ -1031,9 +1037,8 @@ def _register_feedback_submit(apps: Apps, env: McpToolEnv) -> None:
         )
 
 
-def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
-    @apps.tool(
-        resource_uri=tool_ui_uri("asset_upload_intent_create"),
+def _register_asset_tools(server: MCPServer, env: McpToolEnv) -> None:
+    @server.tool(
         name="asset_upload_intent_create",
         description=_TOOL_DESCRIPTIONS["asset_upload_intent_create"],
         title="准备上传附件",
@@ -1057,8 +1062,7 @@ def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
             ),
         )
 
-    @apps.tool(
-        resource_uri=tool_ui_uri("asset_upload_complete"),
+    @server.tool(
         name="asset_upload_complete",
         description=_TOOL_DESCRIPTIONS["asset_upload_complete"],
         title="确认附件上传",
@@ -1081,8 +1085,7 @@ def _register_asset_tools(apps: Apps, env: McpToolEnv) -> None:
             ),
         )
 
-    @apps.tool(
-        resource_uri=tool_ui_uri("asset_import_from_url"),
+    @server.tool(
         name="asset_import_from_url",
         description=_TOOL_DESCRIPTIONS["asset_import_from_url"],
         title="导入对话附件",

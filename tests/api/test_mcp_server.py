@@ -643,7 +643,13 @@ async def test_normal_mcp_client_cannot_discover_or_call_glasses_only_tools(
         for name in MCP_APP_TOOL_SPECS
     }
     assert app_resource_uris == {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS}
-    assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 20
+    assert len(app_resource_uris) == len(MCP_APP_TOOL_SPECS) == 17
+    for transport_tool in (
+        "asset_upload_intent_create",
+        "asset_upload_complete",
+        "asset_import_from_url",
+    ):
+        assert not tool_map[transport_tool].get("_meta", {}).get("ui")
     assert called["result"]["isError"] is True
     assert called["result"]["structuredContent"]["error"]["code"] == ("CLIENT_TYPE_UNSUPPORTED")
 
@@ -1066,12 +1072,15 @@ async def test_mcp_apps_resources_include_timeline_and_habits(app: FastAPI, tmp_
         )
     uris = {resource["uri"] for resource in data["result"]["resources"]}
     assert {tool_ui_uri(name) for name in MCP_APP_TOOL_SPECS} <= uris
-    assert len({uri for uri in uris if uri.startswith("ui://moment-one/tools/")}) == 20
+    assert len({uri for uri in uris if uri.startswith("ui://moment-one/tools/")}) == 17
     content = resource["result"]["contents"][0]
     assert content["mimeType"] == "text/html;profile=mcp-app"
     assert "https://web.example.test/mcp-apps/test-v1/assets/bookkeeping.js" in content["text"]
     assert len(content["text"]) < 2048
-    assert content["_meta"]["ui"]["csp"]["resourceDomains"] == ["https://web.example.test"]
+    assert content["_meta"]["ui"]["csp"]["resourceDomains"] == [
+        "https://web.example.test",
+        "https://storage.yuanshuai.fun",
+    ]
 
 
 @pytest.mark.asyncio
